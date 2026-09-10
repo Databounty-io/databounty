@@ -1,0 +1,62 @@
+{
+  "datasetType": "network_protocol_fsm",
+  "name": "Network Protocol / State Machine",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A state-machine implementation driven through a reference harness; the observed transitions must match the spec.",
+  "difficultyLevels": [
+    "beginner",
+    "intermediate",
+    "advanced"
+  ],
+  "pipeline": [
+    "schema",
+    "dedupe",
+    "execution",
+    "llm",
+    "human_audit"
+  ],
+  "executionEnv": "python3",
+  "dedupeFields": [
+    "protocol_spec",
+    "implementation_code"
+  ],
+  "auditOptions": [
+    0,
+    25,
+    100
+  ],
+  "fields": [
+    {
+      "key": "protocol_spec",
+      "label": "Protocol specification",
+      "role": "instruction",
+      "required": true
+    },
+    {
+      "key": "implementation_code",
+      "label": "Implementation",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "reference_test_harness",
+      "label": "Reference harness",
+      "role": "tests",
+      "lang": "py",
+      "required": true,
+      "help": "Must assign the observed states to `result`."
+    },
+    {
+      "key": "expected_state_sequence",
+      "label": "Expected state sequence",
+      "role": "expected_output",
+      "required": true,
+      "help": "JSON array of states, e.g. [\"CLOSED\", \"SYN_SENT\", \"ESTABLISHED\"]."
+    }
+  ]
+}

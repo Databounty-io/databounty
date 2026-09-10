@@ -1,0 +1,51 @@
+{
+  "datasetType": "cryptographic_implementation",
+  "name": "Cryptographic Implementation Verification",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A cryptographic primitive implementation (hash, HMAC, block cipher, stream cipher, KDF, checksum, or encoding) is actually run against its own documented official test vector(s); the claimed match is checked against the real output.",
+  "difficultyLevels": ["intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 (hashlib/hmac/zlib/base64 stdlib, pycryptodome for block ciphers)",
+  "dedupeFields": ["implementation_code", "official_test_vectors"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "algorithm_name",
+      "label": "Algorithm name",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "implementation_code",
+      "label": "Implementation code",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "role": "enum",
+      "required": true,
+      "options": ["Python"]
+    },
+    {
+      "key": "official_test_vectors",
+      "label": "Official test vector(s)",
+      "role": "tests",
+      "lang": "py",
+      "required": true,
+      "help": "One or more ';'-separated Python statements: optional setup assignments followed by one or more '<call> == <expected>' comparisons."
+    },
+    {
+      "key": "expected_results",
+      "label": "Expected results",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

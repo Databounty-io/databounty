@@ -1,0 +1,48 @@
+{
+  "datasetType": "property_based_testing",
+  "name": "Property-Based Testing (Hypothesis)",
+  "domain": "coding",
+  "category": "test_generation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A contributor-authored property-based test, written with Python's real Hypothesis library, that must genuinely discriminate a correct reference implementation from a deliberately broken one. Verified by actually invoking Hypothesis's own @given example-generation and shrinking machinery twice -- once with the correct implementation bound to IMPL, once with the broken one -- never by static inspection and never by example-based (fixed-input) testing.",
+  "difficultyLevels": ["intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 + hypothesis (real Hypothesis example-generation & shrinking engine, invoked by calling the @given-decorated function directly -- not through pytest)",
+  "dedupeFields": ["correct_implementation", "property_test_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Task description",
+      "role": "instruction",
+      "required": true,
+      "help": "The property or invariant property_test_code must check, in natural language, e.g. 'sorting is idempotent: sorting an already-sorted list produces the same list', 'reversing a list twice returns the original list', 'for any two integers, encode-then-decode via this run-length scheme round-trips exactly', 'a min-heap's peek always returns the smallest inserted element'. Describe the INVARIANT, not a specific example -- a property-based test earns its name by holding for a whole generated input space, not one fixed case."
+    },
+    {
+      "key": "correct_implementation",
+      "label": "Correct reference implementation",
+      "role": "input_code",
+      "lang": "py",
+      "required": true,
+      "help": "Curator-authored, fixed context (never graded, never written by the contributor): a single top-level Python function implementing task_description correctly. property_test_code must NOT redeclare or import this function directly -- see property_test_code's own help text for the IMPL binding convention this harness uses instead. Must contain EXACTLY ONE top-level `def`/`async def` (classes are not supported by this category's IMPL-binding convention)."
+    },
+    {
+      "key": "broken_implementation",
+      "label": "Deliberately broken implementation",
+      "role": "input_code",
+      "lang": "py",
+      "required": true,
+      "help": "Curator-authored, fixed context: the SAME logical function as correct_implementation, with exactly one genuine, plausible bug (an off-by-one, a wrong comparison operator, a missed edge case, a swapped argument order, ...) -- not a syntax error, not a function that crashes unconditionally on every input, and not a no-op. A genuinely discriminating property_test_code must be able to catch this specific bug via a real generated counterexample, not merely differ from correct_implementation in some unrelated way. Must also contain EXACTLY ONE top-level `def`/`async def`, and does not need to share its function's name with correct_implementation's."
+    },
+    {
+      "key": "property_test_code",
+      "label": "Property-based test (Hypothesis)",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true,
+      "help": "THE GRADED ARTIFACT. A real Hypothesis property test: `from hypothesis import given, strategies as st` (or equivalent imports), exactly one `@given(...)`-decorated test function using real Hypothesis strategies (st.integers(), st.lists(...), st.text(), st.tuples(...), st.composite, ...) to generate inputs, with real assertions checking task_description's invariant. IMPL BINDING CONVENTION (read carefully -- this is how this category injects 'the implementation under test', since a @given-decorated function's own parameter list is fully consumed by Hypothesis's generated arguments and cannot also take an explicit implementation argument): the harness defines a module-level name `IMPL` and (re)assigns it to correct_implementation's function, then separately to broken_implementation's function, calling your @given-decorated test function once under each binding. Your test function's body must call `IMPL(...)` (never call correct_implementation's or broken_implementation's own function name directly, and never redeclare a local/global named IMPL) -- referencing IMPL is what the harness checks to confirm your test genuinely exercises an injected implementation rather than running a self-contained check disconnected from either. HARNESS-ENFORCED SETTINGS: do NOT apply your own `@settings(...)` decorator to your test function -- the harness applies one itself (bounded max_examples, deadline=None, a fixed derandomized seed) so results are reproducible across sandbox runs; a submission that supplies its own `@settings(...)` is rejected (Hypothesis itself refuses a second settings object on the same test, and this harness treats that refusal as a rejected submission, not an environment fault). MUST GENUINELY EXPLORE: `@given(st.just(<a single fixed value>))` as your ENTIRE strategy (no other generator combined via st.one_of/tuples/composite/etc.) explores exactly one example and is rejected as degenerate -- this defeats the entire point of property-based testing. The graded outcome: your test must PASS (no exception, no counterexample found) when IMPL is correct_implementation, and must FAIL (Hypothesis finds a genuine counterexample -- its own reported failure, wrapping the AssertionError/exception your assertion raised) when IMPL is broken_implementation. A test that passes against BOTH (too weak to catch the specific bug) or fails against BOTH (broken independent of IMPL, or broken for the correct implementation too) does not satisfy this contract."
+    }
+  ]
+}

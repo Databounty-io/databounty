@@ -1,0 +1,44 @@
+{
+  "datasetType": "terminal_cli",
+  "name": "Terminal / CLI Task Execution",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A shell command sequence that must leave the filesystem in the state a verification script checks for.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "bash",
+  "dedupeFields": ["task_description", "command_sequence"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Task description",
+      "role": "instruction",
+      "required": true
+    },
+    {
+      "key": "environment_setup",
+      "label": "Environment setup",
+      "role": "input_code",
+      "help": "Runs once before command_sequence — builds the starting filesystem state."
+    },
+    {
+      "key": "command_sequence",
+      "label": "Command sequence",
+      "role": "solution_code",
+      "lang": "sh",
+      "required": true
+    },
+    {
+      "key": "expected_final_state",
+      "label": "Expected final state",
+      "role": "tests",
+      "lang": "sh",
+      "required": true,
+      "help": "A bash script that exits 0 exactly when the resulting state is correct."
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "datasetType": "auth_flow",
+  "name": "Auth / Authorization Flow",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A Python auth/authorization handler is run against a synthetically-constructed JWT matching the described identity-provider and test scenario; the actual returned status is compared against the claimed access result.",
+  "difficultyLevels": ["intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 + PyJWT",
+  "dedupeFields": ["auth_flow_code", "test_scenarios"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "auth_flow_code",
+      "label": "Auth flow code",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "mock_identity_provider",
+      "label": "Mock identity provider",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "test_scenarios",
+      "label": "Test scenario",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "expected_access_results",
+      "label": "Expected access result",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

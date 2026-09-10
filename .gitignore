@@ -1,0 +1,71 @@
+# Secrets — MUST stay out of history.
+#
+# Why this file exists SEPARATELY from the rebuild-root .gitignore:
+# `community/` is destined to become its own standalone (public) repository.
+# The moment `git init` runs *inside this folder*, the rebuild-root .gitignore
+# one level up stops applying and protects nothing. This file is what travels
+# with the repo. Do not delete it, and do not rely on the parent's copy.
+#
+# `apps/api/.env` currently holds real third-party credentials reused from v1
+# (GitHub OAuth, ORCID, Slack, OpenRouter, Telegram bot). The first commit is
+# the point of no return: anything committed cannot be removed without
+# rewriting history AND rotating every credential.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.crt
+
+# Dependencies and build output
+node_modules/
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# Runtime artifacts and local data
+apps/api/data/
+**/apps/api/data/
+dump.rdb
+*.log
+
+# Test / coverage output
+coverage/
+.vitest/
+
+# Scratch / throwaway agent scripts. Never publishable.
+# `apps/api/scripts/_tmp_allflags.ts` (which flips every boolean in the settings
+# catalog to true, with no confirmation and no environment guard) and
+# `_tmp_release.ts` were both sitting untracked-but-uningnored, so a first
+# `git add -A` would have committed them into the public repo's history.
+_tmp*
+**/_tmp*
+*.scratch.*
+
+# Orphaned agent worktrees (created by an Agent-tool call with
+# isolation: "worktree" that didn't get cleaned up) — a full nested clone
+# with its own .git, found sitting untracked-but-unignored at 10MB.
+.claude/worktrees/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Agent-tool files, not project documentation.
+# `next dev` writes apps/web/AGENTS.md itself (see
+# node_modules/next/dist/server/lib/generate-agent-files.js) and re-creates it on
+# every run, and CLAUDE.md is a one-line pointer at it. Neither is written by a
+# human or useful to someone reading this repository, so they stay untracked
+# rather than shipping as documentation in a public repo. They will still appear
+# in your working tree; that is expected and harmless.
+AGENTS.md
+CLAUDE.md
+**/AGENTS.md
+**/CLAUDE.md

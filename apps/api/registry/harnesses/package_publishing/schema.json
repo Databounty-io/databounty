@@ -1,0 +1,49 @@
+{
+  "datasetType": "package_publishing",
+  "name": "Package / Library Publishing Verification",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A real package (pip, npm, or cargo) that must build, install, and pass its smoke test exactly as claimed.",
+  "difficultyLevels": ["beginner", "intermediate"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "pip3 / npm / cargo",
+  "dedupeFields": ["package_source_files", "package_manifest"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "package_source_files",
+      "label": "Package source files",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "package_manifest",
+      "label": "Package manifest",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "build_and_publish_commands",
+      "label": "Build / publish commands",
+      "role": "solution_code",
+      "lang": "sh",
+      "required": true
+    },
+    {
+      "key": "install_test_script",
+      "label": "Install test script",
+      "role": "tests",
+      "lang": "sh",
+      "required": true
+    },
+    {
+      "key": "expected_result",
+      "label": "Expected result",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

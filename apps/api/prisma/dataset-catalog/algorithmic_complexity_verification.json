@@ -1,0 +1,47 @@
+{
+  "datasetType": "algorithmic_complexity_verification",
+  "name": "Algorithmic Complexity Verification (Empirical Big-O)",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A contributor's claimed Big-O complexity class for their own implementation, checked EMPIRICALLY -- solve(n) is actually run at multiple real, increasing input sizes and its growth curve (CPU time, not just wall-clock, to defeat a time.sleep()-based fake) is compared against the theoretically-expected ratio for the claim. Different from `performance` (a single-scale, two-implementation relative-speed-ratio check): this category has ONE implementation, MULTIPLE input sizes, and checks the GROWTH CURVE against an asymptotic class, never a fixed relative-speed threshold.",
+  "difficultyLevels": ["intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 (time.perf_counter for wall-clock, time.process_time for CPU time -- both stdlib, no additional libraries)",
+  "dedupeFields": ["task_description", "implementation_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Task description",
+      "role": "instruction",
+      "required": true,
+      "help": "Natural-language description of the algorithm and its task, e.g. 'find the first duplicate value in a list by comparing every pair (claimed O(n^2))', 'compute the n-th Fibonacci number modulo 1e9+7 via fast doubling (claimed O(log n))', 'merge-sort a list of n integers (claimed O(n log n))'. GUIDANCE FOR O(1)/O(log n) TASKS specifically (read before authoring one): implementation_code's solve(n) must build/derive its own input EVERY call (see implementation_code's own help text), and materializing an explicit size-n collection (a list, an array) is itself at least O(n) work purely to allocate -- so a task like 'binary search a freshly-built sorted list of n elements' will empirically measure as O(n) end-to-end (dominated by list construction) even though the search step itself is O(log n), and is NOT a usable O(log n) row for this category. A genuinely usable O(log n)/O(1) task instead treats n as a plain NUMBER the algorithm operates on arithmetically, with no size-n data structure ever materialized -- e.g. fast-doubling Fibonacci(n) mod m (O(log n) multiplications, each on a fixed-size bounded integer since the modulus is applied at every step -- NOT the naive unbounded version, whose intermediate values grow to O(n) bits and secretly degrade back toward linear-or-worse growth), integer exponentiation by squaring, gcd(a, f(n)) via the Euclidean algorithm, or extracting a bit/digit of n directly."
+    },
+    {
+      "key": "implementation_code",
+      "label": "Implementation (Python)",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true,
+      "help": "THE GRADED ARTIFACT. Python code defining EXACTLY ONE top-level function named `solve`, with the fixed signature `solve(n)`: takes a single non-negative integer `n` (the input SIZE), DETERMINISTICALLY generates its own input of that size internally (fixed seed / no external randomness, no file or network I/O, no wall-clock-dependent behavior -- re-running solve(n) with the same n must always produce byte-identical output), then runs the claimed algorithm against that generated input and returns a JSON-serializable result (a number, string, bool, null, or a nested list/dict of those -- never a set, a custom object, bytes, or anything json.dumps() cannot serialize directly). Verified in two independent phases, in this order: (1) CORRECTNESS -- solve(n) is called once for every (n, expected) pair in expected_outputs_at_sizes and must return EXACTLY that value every time, checked BEFORE any timing measurement ever runs (a wrong answer at a small, cheap size is a real failure regardless of how the timing would have looked). (2) GROWTH CURVE -- once correctness passes, solve(n) is called at three increasing, doubling input sizes (N, 2N, 4N -- the exact base N depends on claimed_complexity, chosen so an O(n^3) claim is tested at a far smaller N than an O(n) claim to stay inside the sandbox's time budget) with a few repeats per size to denoise, and the empirical growth ratio between consecutive sizes is compared against claimed_complexity's theoretically-expected ratio. Measured on CPU time (time.process_time()), not wall-clock -- a `time.sleep(f(n))` call to fake a growth curve while doing genuinely fast, correct work burns wall-clock time but essentially zero CPU time, so it is caught (a `time.sleep()`-free busy-loop that burns REAL CPU cycles to fake a slower complexity is a much harder, more expensive attack this harness does not attempt to distinguish from genuine work -- see harness.js's own module doc comment). BOTH over-claiming (claiming a slower class than your implementation genuinely is, e.g. real O(n) claimed as O(n^2)) and under-claiming (real O(n^2) claimed as O(n)) are rejected -- this category verifies genuine understanding of your own algorithm's TIGHT complexity class, not merely a technically-true loose upper bound."
+    },
+    {
+      "key": "claimed_complexity",
+      "label": "Claimed complexity",
+      "role": "enum",
+      "options": ["O(1)", "O(log n)", "O(n)", "O(n log n)", "O(n^2)", "O(n^3)"],
+      "required": true,
+      "help": "The Big-O class implementation_code's solve(n) is claimed to belong to, checked empirically against solve(n)'s own measured CPU-time growth curve (see implementation_code's help text). At the input sizes this harness can afford to test within one sandbox run, O(1) and O(log n) are NOT empirically distinguishable from each other (log n grows too slowly over any feasible doubling range to separate from flat), and neither are O(n) and O(n log n) (the log factor is too small at these sizes) -- this harness accepts either member of each of those two pairs as matching the other's measured curve (a documented, honest residual, not a bug), while still cleanly separating {O(1), O(log n)} from {O(n), O(n log n)} from O(n^2) from O(n^3), which is this category's real, load-bearing distinguishing power."
+    },
+    {
+      "key": "expected_outputs_at_sizes",
+      "label": "Expected outputs at sizes (correctness fixture)",
+      "role": "expected_output",
+      "required": true,
+      "help": "Curator-authored, fixed context (never graded, never written by the contributor): a JSON array of [n, expected_result] pairs at SMALL sizes, e.g. [[5, 10], [12, 66]] or [[3, \"abc\"], [8, \"abcdefgh\"]], used PURELY for correctness verification -- never for timing. Each `expected_result` must be computed by the dataset curator via a real, trusted reference implementation at dataset-generation time (never guessed, never taken from the contributor's own claimed output). Every `n` must be a small, cheap positive integer (at most 200, regardless of claimed_complexity -- these sizes are never used for timing and must stay cheap even for the slowest classes this category supports) that implementation_code's solve(n) is called against and required to match EXACTLY before any timing measurement is ever attempted. Include at least 2 pairs at genuinely different sizes so a hardcoded single-case lookup cannot pass."
+    }
+  ]
+}

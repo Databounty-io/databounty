@@ -1,0 +1,22 @@
+{
+  "datasetType": "regex_generation",
+  "name": "Regular Expression Generation",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 3,
+  "status": "active",
+  "description": "Regex patterns for a stated intent, with positive and negative match sets — mechanically verified in milliseconds, including a catastrophic-backtracking check.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution"],
+  "executionEnv": "node / python3",
+  "dedupeFields": ["natural_language_description", "generated_regex"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    { "key": "natural_language_description", "label": "Intent", "role": "instruction", "required": true, "help": "What the pattern should match, in plain language." },
+    { "key": "generated_regex", "label": "Pattern", "role": "solution_code", "lang": "regex", "required": true },
+    { "key": "test_strings_match", "label": "Must match", "role": "list", "required": true, "help": "One test case per line. Every one of these must match. To test a string containing a newline, provide a JSON array of strings instead." },
+    { "key": "test_strings_no_match", "label": "Must NOT match", "role": "list", "required": true, "help": "One test case per line. To test a string containing a newline, provide a JSON array of strings instead. Include a long adversarial string to expose catastrophic backtracking -- the harness also always runs its own fixed-length stress probes regardless, so this alone is not the only defense." },
+    { "key": "timeout_ms", "label": "Match timeout (ms)", "role": "enum", "options": ["100", "200", "300", "500", "1000"], "required": true, "help": "Matching must complete within this budget. Declaring a larger value does not weaken the harness's own catastrophic-backtracking probes, which always use a short, fixed budget of their own." }
+  ]
+}

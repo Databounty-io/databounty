@@ -1,0 +1,62 @@
+{
+  "datasetType": "graphql_resolver",
+  "name": "GraphQL Schema & Resolver",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A GraphQL schema (SDL) and its resolver map, executed against a sample query with real graphql-js; the result must match the claimed response exactly. Resolvers that reference an external data fixture not supplied by the row are checked structurally (every resolver key must wire to a real schema field) rather than executed against fabricated data.",
+  "difficultyLevels": [
+    "intermediate",
+    "advanced"
+  ],
+  "pipeline": [
+    "schema",
+    "dedupe",
+    "execution",
+    "llm",
+    "human_audit"
+  ],
+  "executionEnv": "node (graphql package)",
+  "dedupeFields": [
+    "schema_definition",
+    "resolver_code"
+  ],
+  "auditOptions": [
+    0,
+    25,
+    100
+  ],
+  "fields": [
+    {
+      "key": "schema_definition",
+      "label": "Schema (SDL)",
+      "role": "input_code",
+      "lang": "graphql",
+      "required": true
+    },
+    {
+      "key": "resolver_code",
+      "label": "Resolver map",
+      "role": "solution_code",
+      "lang": "javascript",
+      "required": true,
+      "help": "Inner body of a resolvers map, e.g. `Type: { field: (parent, args) => ... }` entries."
+    },
+    {
+      "key": "sample_query",
+      "label": "Sample query",
+      "role": "tests",
+      "lang": "graphql",
+      "required": true
+    },
+    {
+      "key": "expected_response",
+      "label": "Expected response (JSON)",
+      "role": "expected_output",
+      "required": true,
+      "help": "JSON string: either {\"data\": {...}} or {\"errors\": [{\"message\": \"...\"}]}."
+    }
+  ]
+}

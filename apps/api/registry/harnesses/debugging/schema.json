@@ -1,0 +1,57 @@
+{
+  "datasetType": "debugging",
+  "name": "Debugging / Bug-Fix Pairs",
+  "domain": "coding",
+  "category": "debugging",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Broken code paired with its corrected version, driven by failing tests. broken_code must FAIL the tests and fixed_code must PASS them — the flagship execution-verified type.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "TypeScript (tsx runtime + tsc --strict type-check)",
+  "dedupeFields": ["prompt", "broken_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "prompt",
+      "label": "Bug description",
+      "role": "instruction",
+      "required": true
+    },
+    {
+      "key": "broken_code",
+      "label": "Broken code",
+      "role": "input_code",
+      "lang": "ts",
+      "required": true
+    },
+    {
+      "key": "fixed_code",
+      "label": "Fixed code",
+      "role": "solution_code",
+      "lang": "ts",
+      "required": true
+    },
+    {
+      "key": "tests",
+      "label": "Tests",
+      "role": "tests",
+      "lang": "ts",
+      "required": true,
+      "help": "Broken code must FAIL these; fixed code must PASS."
+    },
+    {
+      "key": "explanation",
+      "label": "Explanation",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "bug_type",
+      "label": "Bug type",
+      "role": "enum",
+      "options": ["logic", "state", "async", "types", "perf", "memory"]
+    }
+  ]
+}

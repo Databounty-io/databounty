@@ -1,0 +1,51 @@
+{
+  "datasetType": "performance",
+  "name": "Performance / Optimization Pairs",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "An optimized version of working code that must still pass the same tests and run measurably faster on the given benchmark input.",
+  "difficultyLevels": ["intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "python3",
+  "dedupeFields": ["original_code", "tests"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "original_code",
+      "label": "Original code",
+      "role": "input_code",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "optimized_code",
+      "label": "Optimized code",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "tests",
+      "label": "Tests",
+      "role": "tests",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "benchmark_input",
+      "label": "Benchmark input",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "max_allowed_relative_runtime",
+      "label": "Max allowed relative runtime",
+      "role": "rationale",
+      "required": true,
+      "help": "optimized/original runtime ratio must be at or below this."
+    }
+  ]
+}

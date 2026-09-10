@@ -1,0 +1,47 @@
+{
+  "datasetType": "api_function_calling",
+  "name": "API Call / Function-Calling",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "An LLM agent tool-use trace: the generated tool call must match the available schema, and the final answer must accurately state the facts the tool returned.",
+  "difficultyLevels": ["beginner", "intermediate"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "none (structural + fact-presence check, no code executed)",
+  "dedupeFields": ["user_request", "tool_call_json"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "user_request",
+      "label": "User request",
+      "role": "instruction",
+      "required": true
+    },
+    {
+      "key": "available_tools_schema",
+      "label": "Available tools schema",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "tool_call_json",
+      "label": "Tool call (JSON)",
+      "role": "solution_code",
+      "required": true
+    },
+    {
+      "key": "tool_response",
+      "label": "Tool response",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "final_answer",
+      "label": "Final answer",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

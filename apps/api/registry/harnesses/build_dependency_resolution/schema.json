@@ -1,0 +1,43 @@
+{
+  "datasetType": "build_dependency_resolution",
+  "name": "Build / Dependency Resolution",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A real package manifest that must resolve (or fail to resolve) exactly as claimed when installed for real against the live registry.",
+  "difficultyLevels": ["beginner", "intermediate"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "pip3 / npm / cargo (requires network access to the real package registry)",
+  "dedupeFields": ["project_manifest", "language_ecosystem"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "project_manifest",
+      "label": "Project manifest",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "build_command",
+      "label": "Build command",
+      "role": "solution_code",
+      "lang": "sh",
+      "required": true
+    },
+    {
+      "key": "language_ecosystem",
+      "label": "Language ecosystem",
+      "role": "enum",
+      "options": ["pip", "npm", "cargo"],
+      "required": true
+    },
+    {
+      "key": "expected_build_result",
+      "label": "Expected build result",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

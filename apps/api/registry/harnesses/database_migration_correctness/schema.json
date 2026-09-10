@@ -1,0 +1,63 @@
+{
+  "datasetType": "database_migration_correctness",
+  "name": "Database Migration Correctness",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A SQL migration script that must correctly transform a documented 'before' SQLite state into a documented 'after' state. Verified by actually building initial_schema_ddl + initial_fixture_data, executing migration_script against it for real (executescript -- multiple DDL/DML statements are the normal, expected shape here, unlike sql_query_correctness's single-SELECT contract), then running verification_query against the now-migrated database and comparing its real result to expected_verification_result -- the same execution-accuracy methodology as sql_query_correctness, applied to a before/after state transition instead of a single read.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 (stdlib sqlite3 -- no separate database server)",
+  "dedupeFields": ["initial_fixture_data", "migration_script"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Migration task",
+      "role": "instruction",
+      "required": true,
+      "help": "The natural-language description of what migration_script must accomplish over the 'before' state defined by initial_schema_ddl + initial_fixture_data, e.g. 'add a NOT NULL email column backfilled from username', 'split full_name into first_name/last_name', 'add a foreign key constraint and backfill orphaned rows to a default', 'add a composite index', 'rename a column while preserving all data'."
+    },
+    {
+      "key": "initial_schema_ddl",
+      "label": "Initial schema (DDL)",
+      "role": "input_code",
+      "lang": "sql",
+      "required": true,
+      "help": "One or more CREATE TABLE statements defining the 'before' state. Executed via sqlite3 executescript() into a fresh database, before initial_fixture_data and before migration_script ever runs. ATTACH/DETACH/PRAGMA are blocked as a sandbox-hygiene measure and are never needed here."
+    },
+    {
+      "key": "initial_fixture_data",
+      "label": "Initial fixture data (INSERT statements)",
+      "role": "input_code",
+      "lang": "sql",
+      "required": true,
+      "help": "INSERT statements populating the tables declared in initial_schema_ddl, executed via executescript() after initial_schema_ddl and before migration_script. Use real, varied data -- the harness re-verifies that verification_query's post-migration result actually depends on this data (see the anti-hardcoding check) by re-running the whole before-state -> migrate -> verify sequence against a generically mutated copy of the initial fixture."
+    },
+    {
+      "key": "migration_script",
+      "label": "Migration script",
+      "role": "solution_code",
+      "lang": "sql",
+      "required": true,
+      "help": "One or more DDL/DML statements (ALTER TABLE, UPDATE, CREATE INDEX, CREATE TABLE ... AS SELECT for a table-rebuild pattern, ...) that transform the 'before' state into the documented 'after' state -- this is the field being graded. Executed via executescript(), so multiple ;-separated statements are expected and normal, unlike sql_query_correctness's single-statement solution field. ATTACH/DETACH/PRAGMA are blocked as a sandbox-hygiene measure -- SQLite foreign-key enforcement is never turned on by this harness's own connections in the first place (Python's sqlite3 default), so a legitimate migration never needs PRAGMA foreign_keys=OFF/ON to perform a table-rebuild. A migration that fails to execute (a real SQL error) is scored as a real failure -- the migration itself is broken -- never as a missing-runtime condition."
+    },
+    {
+      "key": "verification_query",
+      "label": "Post-migration verification query",
+      "role": "tests",
+      "lang": "sql",
+      "required": true,
+      "help": "A single read-only SELECT (or WITH ... SELECT), run AFTER migration_script, that checks the result. This is the dataset's fixed checking artifact (like a reference_test_harness elsewhere), not something the migration author 'answers'. May query migrated data directly (e.g. SELECT email FROM users ORDER BY id), OR check schema shape via SQLite's pragma table-valued functions inside a SELECT, e.g. SELECT name FROM pragma_table_info('users') -- NOT the bare 'PRAGMA table_info(users);' form, which is rejected like all PRAGMA statements (sqlite_master is allowed). No DDL/DML/ATTACH/stacked statements; must reference a real table or schema object. A pure schema-introspection query is fine for a schema-only task (e.g. 'add an index') and is exempt from the anti-hardcoding check, since a row-only mutation can't change a query that reads only sqlite_master/pragma_*_info."
+    },
+    {
+      "key": "expected_verification_result",
+      "label": "Expected post-migration result",
+      "role": "expected_output",
+      "required": true,
+      "help": "JSON array of row-arrays, in column-output order, e.g. [[1, \"ada@example.com\"], [2, \"grace@example.com\"]]. Column NAMES are never compared -- only cell values, by position -- matching Python's sqlite3 cursor.fetchall() shape. Encode SQL NULL as JSON null. Encode SQLite's 0/1 boolean convention as a JSON number (0/1 preferred; JSON true/false is also accepted as a convenience). If verification_query contains ORDER BY, row order must match exactly; otherwise rows are compared as a multiset (order-insensitive) -- identical rule to sql_query_correctness's expected_result."
+    }
+  ]
+}

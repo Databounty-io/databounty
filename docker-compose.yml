@@ -1,0 +1,376 @@
+# DataBounty Community stack -- Postgres + API (incl. background work) + web + admin + landing.
+#
+# `docker compose up --build` brings up all six long-running containers plus
+# three one-shots. Startup order (enforced below, see the "why" comments on
+# each depends_on):
+#
+#   postgres (healthy)
+#     -> api-migrate  (npx prisma migrate deploy, one-shot)
+#       -> api-seed   (npx tsx prisma/seed-catalog.ts, one-shot, idempotent)
+#         -> api      (node dist/server.js)
+#           -> web, admin, landing (wait for api's /health, then serve)
+#         -> api-seed-admin (npx tsx prisma/seed-admin.ts, one-shot,
+#                            idempotent; no-ops unless SUPER_ADMIN_PASSWORD is
+#                            set -- nothing depends on it, see its own comment)
+#
+# Community only: no paid/wallet/payment services or env vars are wired here.
+#
+# --- Config source of truth -------------------------------------------------
+# Every var name/default below was checked against real source, not guessed:
+#   - apps/api/src/config.ts               (which env vars the API reads, and
+#                                            which ones it silently falls back
+#                                            on with `??` vs leaves undefined)
+#   - apps/api/.env.example                (the docs agent's own list, already
+#                                            in this repo -- read but NOT
+#                                            edited by this file, see CLAUDE.md
+#                                            frozen-paths / parallel-agent note)
+#   - apps/{web,admin,landing}/next.config.ts + grep of process.env.NEXT_PUBLIC_*
+#
+# --- .env override --------------------------------------------------------
+# Compose auto-loads a `.env` file sitting next to this docker-compose.yml
+# (i.e. community/.env, if you create one) for every ${VAR} substitution
+# below. No such file is created by this change -- see the report for why.
+#
+# *** IMPORTANT gotcha if you copy apps/api/.env.example's DATABASE_URL verbatim
+# *** into a top-level .env: that file's DATABASE_URL points at
+# *** "localhost:5432" because it's written for running the API directly on
+# *** the host. Inside this compose network the Postgres host is the service
+# *** name "postgres", not "localhost" -- the default below already uses
+# *** "postgres". If you set DATABASE_URL yourself, point it at "postgres".
+#
+# SESSION_SECRET / ADMIN_SESSION_SECRET / POOL_SAMPLING_HMAC_SECRET /
+# PROFILE_SOURCE_SECRET / ENTERPRISE_ASSERTION_SECRET / ENTERPRISE_SERVICE_SECRET
+# below are given the exact same dev-only literal fallbacks apps/api/src/config.ts
+# already falls back to when the var is unset (`process.env.X ?? "dev_..."`).
+# They are set explicitly here -- rather than left unset to let config.ts's own
+# fallback apply -- only so this file is self-documenting about what the app
+# will actually use; the effective value is identical either way. Generate real
+# secrets with `openssl rand -hex 32` and put them in a top-level `.env` before
+# using this compose file for anything but local smoke-testing.
+
+services:
+  postgres:
+    # Pinned to the SAME major as CI (.github/workflows/ci.yml uses postgres:17)
+    # so self-hosters run the version the test suite actually exercises. The
+    # `-alpine` variant is the only difference and is not version-behavioural.
+    #
+    # UPGRADING FROM 16: a `postgres_data` volume initialised by 16 will NOT
+    # start under 17 -- Postgres refuses a data directory from a different
+    # major ("database files are incompatible with server") and the container
+    # exits, taking every dependent service with it. See DEPLOYMENT.md
+    # ("Upgrading an existing stack from Postgres 16") for the dump/restore
+    # and the destructive reset.
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-community}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Not published to the host by default -- nothing outside this network
+    # needs to reach it, and the host machine's own local Postgres (see
+    # project CLAUDE.md) already listens on 5432. Uncomment to inspect with a
+    # host GUI client; pick a free host port if 5432 is already taken.
+    # ports:
+    #   - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-community}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - community
+
+  # One-shot: applies every committed Prisma migration. `restart: "no"` and a
+  # `condition: service_completed_successfully` dependency below is the
+  # standard docker-compose pattern for "run once, block dependents on its
+  # exit code" -- preferred here over folding this into the api Dockerfile's
+  # CMD because the image is shared with the one-shot jobs and either starting first
+  # would race to apply migrations concurrently; a single dedicated one-shot
+  # avoids that race entirely.
+  api-migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: build
+      secrets:
+        - ca_cert
+    image: databounty-community-api-build:latest
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-community}?schema=public}
+    command: ["npx", "prisma", "migrate", "deploy"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - community
+
+  # One-shot: idempotent dataset-type catalog seed (DEPLOYMENT.md calls this
+  # out as required for a real deployment -- upserts by id, safe to re-run).
+  api-seed:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: build
+      secrets:
+        - ca_cert
+    image: databounty-community-api-build:latest
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-community}?schema=public}
+    command: ["npx", "tsx", "prisma/seed-catalog.ts"]
+    restart: "no"
+    depends_on:
+      api-migrate:
+        condition: service_completed_successfully
+    networks:
+      - community
+
+  api: &api-env
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: runner
+      secrets:
+        - ca_cert
+    image: databounty-community-api:latest
+    environment: &api-environment
+      # `development`, matching apps/api/.env.example and every localhost
+      # default in this file. NOT a stylistic choice: apps/api/src/config.ts
+      # refuses to boot when NODE_ENV is production-like AND ADMIN_URL is
+      # still http://localhost:3002 (the default below) -- that guard is
+      # correct (a stale ADMIN_URL misroutes admin session cookies) and must
+      # not be weakened, so the localhost-shaped default that contradicts it
+      # is the thing that moves. A real deployment overrides BOTH: set
+      # NODE_ENV=production together with a real ADMIN_URL and real secrets.
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: "4000"
+      HOST: "0.0.0.0"
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-community}?schema=public}
+      # URLs -- must match the ports actually published to the host below,
+      # since browsers (not containers) are what hit these.
+      APP_URL: ${APP_URL:-http://localhost:53000}
+      ADMIN_URL: ${ADMIN_URL:-http://localhost:3002}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:53000,http://localhost:3002,http://localhost:3001}
+      # Session/HMAC signing secrets -- see the file-level comment above.
+      SESSION_SECRET: ${SESSION_SECRET:-dev_session_secret_databounty_community_32bytes_long}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-dev_admin_session_secret_databounty_community_32bytes}
+      POOL_SAMPLING_HMAC_SECRET: ${POOL_SAMPLING_HMAC_SECRET:-dev_pool_sampling_hmac_secret_databounty_community}
+      PROFILE_SOURCE_SECRET: ${PROFILE_SOURCE_SECRET:-dev_profile_source_secret_databounty_community_32b}
+      ENTERPRISE_ASSERTION_SECRET: ${ENTERPRISE_ASSERTION_SECRET:-dev_enterprise_assertion_secret_databounty_shared_32b}
+      ENTERPRISE_SERVICE_SECRET: ${ENTERPRISE_SERVICE_SECRET:-dev_enterprise_service_secret_databounty_shared_32b}
+      # Optional integrations -- blank is a real, supported "not configured"
+      # state (every one fails closed, see DEPLOYMENT.md's integration
+      # table), not a placeholder that needs filling before this works.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      E2B_API_KEY: ${E2B_API_KEY:-}
+      E2B_TEMPLATE: ${E2B_TEMPLATE:-databounty-verify}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      ORCID_OAUTH_CLIENT_ID: ${ORCID_OAUTH_CLIENT_ID:-}
+      ORCID_OAUTH_CLIENT_SECRET: ${ORCID_OAUTH_CLIENT_SECRET:-}
+      SLACK_CLIENT_ID: ${SLACK_CLIENT_ID:-}
+      SLACK_CLIENT_SECRET: ${SLACK_CLIENT_SECRET:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+    ports:
+      - "4000:4000"
+    # STORAGE_DRIVER is unset, so it defaults to "local" (apps/api/src/config.ts)
+    # and every uploaded artifact is written to ./data/artifacts inside the
+    # container. Without this volume that state dies with the container, and
+    # `api` and the one-shot containers -- which share the image but not a
+    # filesystem -- would each see only their own half of it, so a job would fail to read an
+    # artifact the API had just accepted. Both services get the same volume via
+    # the `*api-env` merge below.
+    volumes:
+      - api_artifacts:/app/data/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api-seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:4000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - community
+
+  # NOTE: there is no `worker` service any more (removed 2026-09-02). Background
+  # work — the job-queue consumer, the Telegram listener, notification dispatch
+  # and every time-based sweep — runs inside the `api` container itself; see
+  # apps/api/src/worker.ts's startBackgroundWorkers(). The split existed here
+  # but was never deployed outside compose (`infra/` defines only
+  # databounty-api.service), so the real deployment had nothing draining the
+  # queue at all. If you ever scale `api` beyond one replica, split the worker
+  # back out first — the sweeps are not partitioned across instances.
+
+  # One-shot: bootstraps the FIRST admin account. `admin` is not
+  # self-assignable (apps/admin's sign-in page says so outright) and
+  # apps/api/prisma/seed-admin.ts is the only code path in this repo that
+  # grants the role -- without this service a `docker compose up` stack comes
+  # up with zero admins and no way to create one.
+  #
+  # OPT-IN, and the opt-in is SUPER_ADMIN_PASSWORD, not this service's
+  # presence. No password is committed here on purpose: a literal default
+  # would be a published admin password on every stack that forgot to
+  # override it. Read seed-admin.ts for the exact behaviour it is modelled on:
+  #
+  #   - password unset + non-prod NODE_ENV -> warns, creates nothing, exits 0
+  #   - password unset + production        -> throws, exits 1 (deliberate: a
+  #                                           prod deploy must not complete
+  #                                           believing an admin exists)
+  #   - password set                       -> creates the account if absent,
+  #                                           always ensures the `admin` role,
+  #                                           never rewrites an existing
+  #                                           password. Idempotent.
+  #
+  # Set it for a real deployment:
+  #   SUPER_ADMIN_EMAIL=you@yourcompany.com SUPER_ADMIN_PASSWORD='...' docker compose up
+  #
+  # NOTHING depends on this service. That is deliberate, and it is the reason
+  # `api` lists only `api-seed` above: a `service_completed_successfully`
+  # edge from `api` to here would (a) be satisfied by the skip path anyway, so
+  # it would buy nothing in the common case, and (b) hard-block the whole stack
+  # from booting on the production-without-a-password path, turning "you have no
+  # admin" into "you have no API". The skip is silent-ish by design, so check
+  # this container's log/exit code (`docker compose logs api-seed-admin`) rather
+  # than assuming an admin was created.
+  #
+  # It inherits `api`'s full environment (merge below) rather than just
+  # DATABASE_URL, unlike api-migrate/api-seed, because seed-admin.ts imports
+  # src/config.ts and therefore runs every one of its boot guards -- including
+  # the production ADMIN_URL guard. Passing the same NODE_ENV/ADMIN_URL as the
+  # API means this one-shot can never pass or fail those guards differently
+  # from the service it is bootstrapping an admin for.
+  #
+  # Placed after `api` rather than next to the other one-shots only
+  # because the `*api-environment` anchor it merges is defined on `api`, and
+  # a YAML alias cannot precede its anchor. File order has no effect on
+  # startup order -- that comes from depends_on.
+  api-seed-admin:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: build
+      secrets:
+        - ca_cert
+    image: databounty-community-api-build:latest
+    environment:
+      <<: *api-environment
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-superadmin@databounty.io}
+      # Empty by default -- seed-admin.ts treats "" as unset (`if (!password)`)
+      # and takes the warn-and-skip / throw-in-production path above. This is
+      # an absent password, not a default one.
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:-}
+    command: ["npx", "tsx", "prisma/seed-admin.ts"]
+    restart: "no"
+    depends_on:
+      api-seed:
+        condition: service_completed_successfully
+    networks:
+      - community
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+        NEXT_PUBLIC_LANDING_URL: ${NEXT_PUBLIC_LANDING_URL:-http://localhost:3001}
+        NEXT_PUBLIC_DASHBOARD_URL: ${NEXT_PUBLIC_DASHBOARD_URL:-http://localhost:53000}
+        NEXT_PUBLIC_ADMIN_URL: ${NEXT_PUBLIC_ADMIN_URL:-http://localhost:3002}
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
+    ports:
+      - "53000:53000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:53000/').then(r => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - community
+
+  admin:
+    build:
+      context: .
+      dockerfile: apps/admin/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+        NEXT_PUBLIC_LANDING_URL: ${NEXT_PUBLIC_LANDING_URL:-http://localhost:3001}
+        NEXT_PUBLIC_DASHBOARD_URL: ${NEXT_PUBLIC_DASHBOARD_URL:-http://localhost:53000}
+        NEXT_PUBLIC_ADMIN_URL: ${NEXT_PUBLIC_ADMIN_URL:-http://localhost:3002}
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
+    ports:
+      # Matches the app's conventional dev port (next dev -p 3002) and the
+      # NEXT_PUBLIC_ADMIN_URL default.
+      - "3002:3002"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/').then(r => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - community
+
+  landing:
+    build:
+      context: .
+      dockerfile: apps/landing/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+        NEXT_PUBLIC_LANDING_URL: ${NEXT_PUBLIC_LANDING_URL:-http://localhost:3001}
+        NEXT_PUBLIC_DASHBOARD_URL: ${NEXT_PUBLIC_DASHBOARD_URL:-http://localhost:53000}
+        NEXT_PUBLIC_ADMIN_URL: ${NEXT_PUBLIC_ADMIN_URL:-http://localhost:3002}
+    ports:
+      - "3001:3001"
+    environment:
+      INTERNAL_API_URL: http://api:4000
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/').then(r => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - community
+
+networks:
+  community:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  # Used by `api` (which also runs the background work) -- see the comment on api's `volumes:`.
+  api_artifacts:
+
+# Optional: only needed on a network that intercepts outbound TLS (e.g.
+# corporate SSL inspection) -- prisma generate's engine-binary download
+# fails there otherwise. Set CA_CERT_PATH to that network's CA cert before
+# building; unset, this resolves to /dev/null (always present, always
+# empty), which the Dockerfile's `-s` check correctly treats as "no cert
+# provided" -- a normal build without CA_CERT_PATH set is unaffected.
+secrets:
+  ca_cert:
+    file: ${CA_CERT_PATH:-/dev/null}

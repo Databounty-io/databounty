@@ -1,0 +1,48 @@
+{
+  "datasetType": "refactoring",
+  "name": "Refactoring Pairs (Same-Behavior)",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A refactor of working code that must pass the exact same tests as the original — proof the refactor preserved behavior.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "polyglot sandbox (python3 / node / java / go / rustc / gcc / g++ / ruby / php / mono)",
+  "dedupeFields": ["original_code", "tests"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "original_code",
+      "label": "Original code",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "refactored_code",
+      "label": "Refactored code",
+      "role": "solution_code",
+      "required": true
+    },
+    {
+      "key": "tests",
+      "label": "Tests",
+      "role": "tests",
+      "required": true,
+      "help": "Both the original and refactored code must pass these. For Java/Go/Rust/C++: original_code and refactored_code are each concatenated directly with tests (not wrapped in a synthesized entrypoint) -- tests must supply a complete main()/entrypoint itself. For Java specifically, the convention is to leave original_code's class unclosed (e.g. end after 'public class Main {' and its methods, no closing brace) and have tests supply the rest of the method body plus the closing brace."
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "role": "enum",
+      "options": ["Python", "JavaScript", "TypeScript", "Java", "Go", "Rust", "C++", "Ruby", "PHP"],
+      "required": true
+    },
+    {
+      "key": "improvement_type",
+      "label": "Improvement type",
+      "role": "rationale"
+    }
+  ]
+}

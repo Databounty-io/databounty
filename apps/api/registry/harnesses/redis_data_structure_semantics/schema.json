@@ -1,0 +1,55 @@
+{
+  "datasetType": "redis_data_structure_semantics",
+  "name": "Redis Data Structure Semantics",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Python (redis-py) code that manipulates a REAL, freshly-started redis-server process for this row -- sorted sets, hashes, TTL/expiry, lists, atomic counters/transactions. Verified by actually running solution_code against that live server, then independently re-querying the server's real post-execution state through a dataset-curator-authored verification_code on a SEPARATE connection, and comparing the observed result to expected_verification_result -- never by inspecting solution_code's source or trusting anything it prints. The whole scenario is additionally re-run end-to-end against a second, independently-started server to confirm the observed behavior is reproducible and not an artifact of incidental state/timing on one particular server instance.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 + redis-py against a REAL, per-row redis-server subprocess (ephemeral, no persistence -- started with --save \"\" --appendonly no, booted fresh and torn down inside this row's own verify() call) -- never a mock/in-memory reimplementation (e.g. fakeredis), never a server shared across rows or sandbox invocations.",
+  "dedupeFields": ["initial_state_commands", "solution_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Task description",
+      "role": "instruction",
+      "required": true,
+      "help": "Natural-language description of the Redis-backed behavior solution_code must implement against a real server, e.g. 'implement a leaderboard using a sorted set: ZADD scores, return top-3 via ZREVRANGE', 'implement a per-user rate limiter using INCR+EXPIRE with a 1-second window', 'implement a session cache using SETEX with a short TTL', 'implement a dedup-check using SADD's return value', 'implement an atomic counter using MULTI/EXEC or WATCH'. TTL-based tasks should use SHORT TTLs (1-2 seconds) so verification_code never needs a long sleep."
+    },
+    {
+      "key": "initial_state_commands",
+      "label": "Initial state (Python/redis-py)",
+      "role": "input_code",
+      "lang": "py",
+      "required": false,
+      "help": "Python (redis-py) statements that seed STARTING state on the live server before solution_code runs. Executed in the same process, immediately before solution_code, against the SAME pre-connected `r` variable (a real redis.Redis(host='127.0.0.1', port=<this row's port>, decode_responses=True) client) that solution_code then continues to use -- one shared connection carrying setup+solution, mirroring how this registry's SQL categories share one DB connection across schema/fixture/migration. May be left empty for a task that needs no starting state (e.g. a leaderboard that starts from an empty sorted set)."
+    },
+    {
+      "key": "solution_code",
+      "label": "Solution code (Python/redis-py)",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true,
+      "help": "The contributor's Python (redis-py) code -- the graded artifact. Executed against the SAME live server as initial_state_commands, via the pre-existing `r` variable (an already-connected redis.Redis(..., decode_responses=True) client injected by the harness -- do not construct a competing connection or reassign `r`; only writes that actually land on this exact connection's server are ever observed). Verified by independently re-querying the server's REAL post-execution state via verification_code on a totally separate connection afterward -- never by inspecting this code's text, never by trusting anything it prints to stdout, and never by trusting its return value (top-level code, not a function -- there is nothing to return to)."
+    },
+    {
+      "key": "verification_code",
+      "label": "Verification code (Python/redis-py, curator-authored)",
+      "role": "tests",
+      "lang": "py",
+      "required": true,
+      "help": "Python (redis-py) code authored by the DATASET CURATOR, never the graded contributor. Runs AFTER solution_code, against its OWN fresh, independent `r` variable -- a NEW redis.Redis(host='127.0.0.1', port=<this row's same port>, decode_responses=True) connection (a different TCP connection than solution_code's, same server) -- and must assign the observed outcome to a variable named `result`. Never trusts anything solution_code printed; only what this code itself reads back from the live server. `result` must be a plain JSON-serializable value (None/bool/int/float/str/list/dict -- no custom objects, no raw bytes/non-UTF8 values, since every connection in this category decodes responses as text)."
+    },
+    {
+      "key": "expected_verification_result",
+      "label": "Expected verification result",
+      "role": "expected_output",
+      "required": true,
+      "help": "The expected value of verification_code's `result` variable, as JSON text -- a single JSON-serializable value: a scalar (e.g. 42, \"alice\", true, null) or a structured array/object (e.g. [\"alice\",\"bob\"], {\"score\":42,\"rank\":1}). Compared to the real captured result structurally: object key order never matters; array/list order always matters exactly as written (Redis list/zset ordering is frequently the very thing under test -- if a task's own semantics are genuinely order-independent, e.g. a plain SET's membership, verification_code itself should sort/normalize before assigning `result`, since it fully controls the comparison shape). Numbers compare with float tolerance; strings/booleans/null compare exactly with no cross-type coercion (JSON string \"1\" and JSON number 1 are different values)."
+    }
+  ]
+}

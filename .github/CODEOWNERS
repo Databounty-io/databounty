@@ -1,0 +1,89 @@
+# CODEOWNERS — NOT ACTIVE YET. Every rule below is commented out on purpose.
+#
+# WHY IT IS INERT
+# ---------------
+# A CODEOWNERS rule needs a real GitHub handle or team. The organization that
+# will host this repository currently has exactly ONE member, and the second
+# named human owner is still an open item, so there is no second reviewer to
+# name and no team to route to. Writing an invented handle would not create
+# review — GitHub reports it as an unknown owner, the rule matches nothing, and
+# the repository would advertise reviewer routing it does not have. So the
+# intended routing is recorded here as commented rules, ready to enable in one
+# edit, and nothing is claimed that is not true.
+#
+# WHAT MUST BE SUBSTITUTED BEFORE UNCOMMENTING
+# --------------------------------------------
+#   @OWNER_HANDLE          → the GitHub handle of the repository owner
+#   @SECOND_OWNER_HANDLE   → the GitHub handle of the second named human owner
+#   @Databounty-io/api-reviewers, @Databounty-io/ci-reviewers
+#                          → org teams, if teams are used instead of handles.
+#                            A team must have write access to the repository or
+#                            it is ignored as an owner.
+# Substitute every placeholder, delete the leading "# " from the rules you
+# want, then confirm each pattern actually matches in GitHub's CODEOWNERS
+# editor view (it reports unknown owners and unmatched patterns there).
+#
+# WHAT THIS FILE DOES AND DOES NOT DO
+# -----------------------------------
+# Even once enabled, CODEOWNERS only REQUESTS review. It enforces nothing by
+# itself: mandatory approval comes from a branch protection or ruleset with
+# "Require review from Code Owners" turned on. Branch protections have not been
+# inspected, so the current review requirement on this repository is unknown —
+# do not read this file as evidence that anything is gated. Repository write
+# access and contributor credit are also separate from ownership here; being
+# credited in CONTRIBUTORS.md confers no approval authority.
+#
+# Rules are last-match-wins, so the narrow sensitive paths come after the
+# broad default.
+
+# ---------------------------------------------------------------------------
+# Default owner for anything not matched below.
+# ---------------------------------------------------------------------------
+# *                                    @OWNER_HANDLE
+
+# ---------------------------------------------------------------------------
+# API — the only application with database access, secrets handling and the
+# MCP surface. Narrow paths first, then the highest-risk subtrees.
+# ---------------------------------------------------------------------------
+# /apps/api/                           @OWNER_HANDLE
+
+# Authentication, sessions, API keys and MCP tokens. These are the paths that
+# exist today; re-check them when the tree moves rather than copying the list.
+# /apps/api/src/routes/v1/auth.ts      @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /apps/api/src/lib/session.ts         @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /apps/api/src/lib/session-cookie.ts  @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /apps/api/src/lib/password.ts        @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /apps/api/src/lib/password-reset.ts  @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /apps/api/src/lib/rbac.ts            @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /apps/api/src/lib/rate-limit-key.ts  @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /apps/api/src/services/api-keys.ts   @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /apps/api/src/services/mcp-oauth.ts  @OWNER_HANDLE @SECOND_OWNER_HANDLE
+
+# Storage drivers — the artifact traversal/containment surface.
+# /apps/api/src/lib/storage/           @OWNER_HANDLE @SECOND_OWNER_HANDLE
+
+# Configuration and secret declaration — production boot guards live here.
+# /apps/api/src/config.ts              @OWNER_HANDLE @SECOND_OWNER_HANDLE
+
+# Schema and migrations. A merged migration is effectively irreversible on a
+# deployed database, so this needs a second pair of eyes more than most code.
+# /apps/api/prisma/schema.prisma       @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /apps/api/prisma/migrations/         @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /apps/api/prisma.config.ts           @OWNER_HANDLE @SECOND_OWNER_HANDLE
+
+# ---------------------------------------------------------------------------
+# CI, container builds and repository metadata. A workflow change can exfiltrate
+# a secret or dispatch a deploy, so it is reviewed as a security surface.
+# ---------------------------------------------------------------------------
+# /.github/                            @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /.github/workflows/                  @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /.github/CODEOWNERS                  @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /docker-compose.yml                  @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /apps/api/Dockerfile                 @OWNER_HANDLE @SECOND_OWNER_HANDLE
+
+# ---------------------------------------------------------------------------
+# Security and licence documents.
+# ---------------------------------------------------------------------------
+# /SECURITY.md                         @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /LICENSE                             @OWNER_HANDLE @SECOND_OWNER_HANDLE
+# /NOTICE                              @OWNER_HANDLE @SECOND_OWNER_HANDLE

@@ -1,0 +1,47 @@
+{
+  "datasetType": "static_compilation",
+  "name": "Static Compilation / Type-Checking",
+  "domain": "coding",
+  "category": "debugging",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Code that must either compile/type-check cleanly, or fail with the exact error code claimed for it.",
+  "difficultyLevels": ["intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "polyglot sandbox (tsc / rustc / javac / go vet / g++ / gcc / python3)",
+  "dedupeFields": ["source_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "source_code",
+      "label": "Source code",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "role": "enum",
+      "options": ["TypeScript", "Rust", "Java", "C++", "Go", "Python"],
+      "required": true
+    },
+    {
+      "key": "compiler_or_checker",
+      "label": "Compiler / checker",
+      "role": "rationale"
+    },
+    {
+      "key": "expected_result",
+      "label": "Expected result",
+      "role": "expected_output",
+      "required": true
+    },
+    {
+      "key": "error_details",
+      "label": "Error details",
+      "role": "rationale",
+      "help": "The specific compiler error code expected, when expected_result is a failure."
+    }
+  ]
+}

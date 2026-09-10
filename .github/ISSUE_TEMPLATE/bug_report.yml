@@ -1,0 +1,91 @@
+name: 🐛 Bug report
+description: Something behaves differently than documented or than it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Two checks before you write this up** — both look exactly like application bugs:
+
+        1. Is the API running (background work lives inside it — `npm run dev`, or the `api` service in
+           `docker compose`)? Without it, dedup / execution / publication jobs queue and nothing moves.
+        2. Does the API's `CORS_ORIGINS` list the exact frontend origin and port you are using?
+           If not, the browser blocks the call with no server-side error and the page just sits empty.
+
+        Also check the **Works today · Being wired up · Not built** table in the README — some things
+        are known-incomplete on purpose. A report against one of those is still welcome; just say so.
+
+  - type: dropdown
+    id: app
+    attributes:
+      label: Which app?
+      options:
+        - apps/api
+        - apps/web (dashboard)
+        - apps/admin (operator console)
+        - apps/landing (public site)
+        - More than one / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Page or endpoint
+      description: The route or endpoint where it happens.
+      placeholder: "/contributor/pool/[bountyId], or POST /v1/submissions"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: If a trust or validation claim was wrong, quote exactly what the UI said.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Sign in as a contributor
+        2. Open …
+        3. Click …
+    validations:
+      required: true
+
+  - type: input
+    id: sha
+    attributes:
+      label: Commit SHA
+      description: "`git rev-parse --short HEAD`"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output, failing request, or server log
+      description: >-
+        Frontends — browser console plus the failing network request (status and response body).
+        API — the request, the response status and body, and the relevant server log lines.
+      render: shell
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      placeholder: |
+        Node: 20.19.0
+        Postgres: 17
+        Running via: docker compose / npm run dev
+        Browser: Chrome 141 (frontend issues only)

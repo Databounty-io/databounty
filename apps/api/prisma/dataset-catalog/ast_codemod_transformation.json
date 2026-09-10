@@ -1,0 +1,71 @@
+{
+  "datasetType": "ast_codemod_transformation",
+  "name": "AST Codemod Transformation",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "transformed_code (THE GRADED ARTIFACT) must be a genuine, mechanically-verifiable AST-level transformation of original_code, per one of a small fixed set of transformation_type values -- checked TWO ways, never just one: (1) STRUCTURALLY, by parsing BOTH original_code and transformed_code with Python's real stdlib `ast` module and mechanically confirming the SPECIFIC claimed transformation actually happened (never a text/regex diff, which would be trivially gameable and would not actually confirm an AST-level transformation occurred); (2) BEHAVIORALLY, by executing a fixed entry-point function from both original_code and transformed_code against a shared set of curator-declared behavior_check test cases and confirming the results match -- for 7 of the 8 transformation_type values this means pure behavior PRESERVATION (a real refactor must not change what the code computes); for the 8th (except_pass_to_logging), the return value/control-flow is still required to match exactly, but the transformation's OWN point is a new, mechanically-verified observable side effect (a real logging call, confirmed via runtime capture, not just claimed) -- see harness.js's own module doc comment for why this single semantic-changing type was included alongside 7 purely behavior-preserving ones, and the reasoning behind each transformation_type's own structural check.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 (stdlib only -- ast, json, logging). No new sandbox dependency: parsing uses the real interpreter's own built-in `ast` module, never a reimplementation.",
+  "dedupeFields": ["original_code", "transformed_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Task description",
+      "role": "instruction",
+      "required": true,
+      "help": "Natural-language description of the specific, well-defined codemod being demonstrated, e.g. 'rename every occurrence of function calculate_totl to calculate_total, including its call sites', 'convert every %-style string formatting expression to an f-string', 'hoist every module-level import statement found inside a function body to the top of the file', 'replace every bare except Exception: pass with except Exception: logging.exception(...)', 'convert a list comprehension that is only ever consumed once into an equivalent generator expression', 'add type hints to every function parameter that has an unambiguous single-type default value', 'replace every == None / != None comparison with is None / is not None', 'remove an unused, side-effect-free import'. This is scenario framing/flavor text for the contributor and human/LLM audit stages -- the harness's own pass/fail decision is driven entirely by transformation_type + transformation_params + the real AST/behavioral checks below, never parsed from this field."
+    },
+    {
+      "key": "transformation_type",
+      "label": "Transformation type",
+      "role": "enum",
+      "options": [
+        "rename_identifier",
+        "percent_format_to_fstring",
+        "hoist_nested_imports",
+        "listcomp_to_genexpr",
+        "add_param_type_hints",
+        "eq_none_to_is_none",
+        "except_pass_to_logging",
+        "remove_unused_import"
+      ],
+      "required": true,
+      "help": "Selects which of this harness's own independently-implemented, per-type real-AST structural checks (see harness.js's own module doc comment for the exact reasoning behind each one) verifies transformed_code. A small, fixed, mechanically-checkable set on purpose -- not an open-ended free-for-all -- so every row's structural claim can be verified by real ast.parse()/ast.walk() logic, not guessed at from prose. 7 of the 8 are purely behavior-PRESERVING transformations (rename_identifier, percent_format_to_fstring, hoist_nested_imports, listcomp_to_genexpr, add_param_type_hints, eq_none_to_is_none, remove_unused_import); the 8th, except_pass_to_logging, is deliberately the one SEMANTIC-CHANGING type included in this category's first version -- see harness.js for why it was chosen (the 'change' is an added, independently runtime-verified logging side effect, while the return value/control-flow the rest of this harness already checks for every other type is still required to stay identical). Python-2-only patterns (dict.has_key(), .iteritems(), etc.) were deliberately excluded from this set: original_code must be genuinely runnable Python 3 for the behavioral half of this contract to mean anything, and those idioms simply raise under a real Python 3 interpreter."
+    },
+    {
+      "key": "transformation_params",
+      "label": "Transformation parameters (curator-authored ground truth, JSON)",
+      "role": "input_code",
+      "required": true,
+      "help": "JSON object, curator-authored, mechanically consumed by the harness's own per-transformation_type structural check (never graded on its own, but every value in it IS mechanically cross-checked against the real AST of original_code/transformed_code -- an internally inconsistent value is rejected as a dataset-authoring defect before transformed_code is ever graded, the same discipline retry_backoff_resilience's strategy_params/rate_limiting_policy_simulation's policy_params already established). Always requires exactly two universal keys: entry_point_original (a plain Python identifier naming a top-level function in original_code) and entry_point_transformed (a plain Python identifier naming a top-level function in transformed_code) -- these are DELIBERATELY two separate fields, not one shared name: for every transformation_type except rename_identifier they will normally be identical, but rename_identifier can legitimately rename the entry point itself (entry_point_original = the old name, entry_point_transformed = the new one), and the harness must be told explicitly which name to call on which side rather than assuming they match. Per transformation_type, additional required keys: rename_identifier -- {old_name: identifier, new_name: identifier, both differing}; percent_format_to_fstring -- {min_conversions: 1-20}; hoist_nested_imports -- {min_hoisted: 1-20}; listcomp_to_genexpr -- {min_conversions: 1-20}; add_param_type_hints -- {function_name: identifier, params: [{name: identifier, type: one of int/float/str/bool}, ...] (1-6 entries)}; eq_none_to_is_none -- {min_conversions: 1-20}; except_pass_to_logging -- {min_conversions: 1-20}; remove_unused_import -- {bound_name: identifier}. AUTHORING GUIDANCE for hoist_nested_imports specifically: only use genuinely side-effect-free stdlib imports (math, os.path, typing, collections, ...) for this transformation_type -- hoisting an import with a real side effect (plugin registration, a module-level network call) could legitimately change execution ORDER even though the harness's own structural check would still pass; the row's own behavior_check execution is still the real backstop here (see harness.js), but a row built around a side-effecting import risks a genuine, not-a-harness-bug behavioral failure."
+    },
+    {
+      "key": "original_code",
+      "label": "Original code (Python)",
+      "role": "input_code",
+      "lang": "py",
+      "required": true,
+      "help": "The BEFORE version. Must be syntactically valid, genuinely runnable Python 3 (never Python-2-only syntax) that defines a top-level function named transformation_params.entry_point_original. Trusted as curator-declared ground truth in the sense that its own real, executed behavior against every behavior_check test case is cross-checked against each case's own expected_output BEFORE transformed_code is ever graded (a mismatch here is rejected as a dataset-authoring defect, exactly like retry_backoff_resilience's own oracle cross-check) -- but it is still REAL code, actually parsed via ast.parse() and actually exec()'d in the sandbox, never merely assumed correct."
+    },
+    {
+      "key": "transformed_code",
+      "label": "Transformed code (Python) -- THE GRADED ARTIFACT",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true,
+      "help": "THE GRADED ARTIFACT. The AFTER version, claimed to be original_code with EXACTLY transformation_type applied per transformation_params -- nothing else. Must define a top-level function named transformation_params.entry_point_transformed. Verified two ways: (1) STRUCTURALLY -- the real Python ast module parses this against original_code and the harness's own per-transformation_type check (see harness.js) mechanically confirms the claimed transformation genuinely occurred (not merely that some superficially-plausible AST shape exists somewhere); (2) BEHAVIORALLY -- transformation_params.entry_point_transformed is actually called with every behavior_check test case's own args/kwargs, and its real return value must match that case's own expected_output exactly (a tiny numeric tolerance only), with an additional, independently runtime-verified logging-call check for any test case that declares expect_log_call:true (transformation_type except_pass_to_logging only). ANTI-GAMING: transformed_code identical to original_code (ignoring whitespace) is rejected outright as not a transformation at all; an identifier-token Jaccard-similarity floor against original_code rejects a transformed_code that has structurally diverged too far to plausibly still be original_code with one mechanical edit applied (a wholesale, unrelated rewrite that merely happens to pass behavior_check cannot pass this floor) -- the same anti-gutting mechanism static_lint_rule_fix_verification's own harness already established for an analogous concern, adapted here to identifier-vocabulary retention rather than lint-fix retention."
+    },
+    {
+      "key": "behavior_check",
+      "label": "Behavior check test cases (curator-authored ground truth, JSON)",
+      "role": "tests",
+      "required": true,
+      "help": "JSON array of 3-8 test cases, each `{\"args\": [...json values, up to 6], \"kwargs\": {...} (optional), \"expected_output\": <any JSON value>, \"expect_log_call\": true|false (optional, default false, meaningful only for transformation_type except_pass_to_logging)}`. Every case's args/kwargs are handed DIRECTLY to entry_point_original/entry_point_transformed as real positional/keyword arguments; expected_output is curator-computed ground truth, cross-checked against original_code's own real execution before transformed_code is ever graded, then required to match transformed_code's own real execution too (see original_code/transformed_code's own help text). CRITICAL SECURITY PROPERTY, worth stating explicitly: expected_output (and expect_log_call) are NEVER sent into the Python subprocess that executes original_code/transformed_code at all -- only args/kwargs are, and only the harness's own separate Node process ever holds or compares against expected_output. This closes off the exact frame-walking/secret-leak class this registry's schema_conformance_validation category found and fixed the hard way (a contributor's own code reading a same-process oracle's locals via sys._getframe()) -- here there is no same-process oracle value to walk into in the first place. ANTI-HARDCODING, MECHANICALLY ENFORCED: at least one pair of test cases must use genuinely different args (a row where every case calls the entry point identically tests nothing), and at least one pair must declare genuinely different expected_output values (a row whose EVERY case expects the identical output could be satisfied by a hardcoded-constant transformed_code with no real logic at all) -- both rejected as bad_behavior_check dataset-authoring defects, not merely discouraged. For transformation_type except_pass_to_logging specifically, at least one test case must set expect_log_call:true (a row that never actually exercises the new logging call tests nothing this transformation_type doesn't already share with a no-op) -- see harness.js's own module doc comment for the full anti-gaming reasoning. SCOPE LIMIT (v1): every test case is expected to complete without the entry point raising on EITHER side -- there is no expected_raises-style field yet for rows that intentionally test exception behavior; a case whose original_code entry point raises unexpectedly is treated as a dataset-authoring defect, not a legitimate test of exception handling."
+    }
+  ]
+}

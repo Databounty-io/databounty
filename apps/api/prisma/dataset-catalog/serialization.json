@@ -1,0 +1,56 @@
+{
+  "datasetType": "serialization",
+  "name": "Serialization / Deserialization Round-Trip",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Serialization + deserialization code that must reproduce the original object, or the specific documented format limitation (e.g. JSON coercing tuples to lists).",
+  "difficultyLevels": ["intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 (json/pickle/xml stdlib, msgpack/yaml)",
+  "dedupeFields": ["sample_object", "serialization_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "schema_definition",
+      "label": "Schema definition",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "format",
+      "label": "Format",
+      "role": "enum",
+      "options": ["JSON", "Protobuf", "MessagePack", "YAML", "XML", "Pickle"],
+      "required": true
+    },
+    {
+      "key": "sample_object",
+      "label": "Sample object",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "serialization_code",
+      "label": "Serialization code",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "deserialization_code",
+      "label": "Deserialization code",
+      "role": "tests",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "round_trip_expected_result",
+      "label": "Round-trip expected result",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

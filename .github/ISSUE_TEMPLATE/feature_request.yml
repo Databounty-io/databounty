@@ -1,0 +1,48 @@
+name: 💡 Feature or change request
+description: Propose something new, or a change to existing behavior.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Please describe the problem, not only the solution** — the problem is the part maintainers can
+        evaluate, and there is often an existing way to solve it.
+
+        **Out of scope, and will be closed:** wallet, payments, escrow, payouts, validator bonds, and
+        anything on-chain. That code does not exist here by design — it is a separate product, not a
+        disabled flag. See "What's NOT included" in the README.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you hitting?
+      description: What were you trying to do, and what got in the way?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: surfaces
+    attributes:
+      label: What would this touch?
+      description: >-
+        API surface changes and Prisma schema changes need agreement before code — see
+        CONTRIBUTING.md. Ticking one of those is not a problem; it just means we discuss first.
+      options:
+        - label: A new API endpoint, or a change to an existing request/response shape
+        - label: The Prisma schema (needs a matching migration in the same PR)
+        - label: What a trust claim means, or when a pipeline stage counts as passed
+        - label: UI only
+        - label: Docs only
+        - label: Not sure
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything you already tried or ruled out

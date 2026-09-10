@@ -1,0 +1,48 @@
+{
+  "datasetType": "unit_test_gen",
+  "name": "Unit Test Generation",
+  "domain": "coding",
+  "category": "test_generation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A generated test suite that actually passes when run against the source code, using the framework declared for the row (pytest / jest / go test / rustc --test).",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "python3+pytest / node+jest / go / rustc",
+  "dedupeFields": ["source_code", "generated_tests"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "source_code",
+      "label": "Source code",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "role": "enum",
+      "options": ["Python", "JavaScript", "TypeScript", "Go", "Rust"],
+      "required": true
+    },
+    {
+      "key": "generated_tests",
+      "label": "Generated tests",
+      "role": "tests",
+      "required": true
+    },
+    {
+      "key": "framework",
+      "label": "Test framework",
+      "role": "enum",
+      "options": ["pytest", "jest", "mocha", "vitest", "go test", "rustc --test (built-in test harness)"],
+      "required": true
+    },
+    {
+      "key": "coverage_target",
+      "label": "Coverage target",
+      "role": "rationale"
+    }
+  ]
+}

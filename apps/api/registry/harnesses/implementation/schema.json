@@ -1,0 +1,57 @@
+{
+  "datasetType": "implementation",
+  "name": "Function / Feature Implementation",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A working, tested implementation generated from a natural-language requirement. solution_code must PASS the provided tests, executed in the row's declared language.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 / node (js+ts) / javac+java / go / rustc / gcc+g++ / ruby / php / mcs+mono",
+  "dedupeFields": ["instruction", "solution_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "instruction",
+      "label": "Requirement",
+      "role": "instruction",
+      "required": true
+    },
+    {
+      "key": "starter_code",
+      "label": "Starter code",
+      "role": "input_code",
+      "lang": "ts",
+      "help": "A stub only (e.g. a bare function signature with no body) -- documentation for the contributor, never executed or checked by verification."
+    },
+    {
+      "key": "solution_code",
+      "label": "Solution",
+      "role": "solution_code",
+      "lang": "ts",
+      "required": true
+    },
+    {
+      "key": "tests",
+      "label": "Tests",
+      "role": "tests",
+      "lang": "ts",
+      "required": true,
+      "help": "solution_code must PASS all provided tests."
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "role": "enum",
+      "options": ["Python", "JavaScript", "TypeScript", "Java", "Go", "Rust", "C++", "C#", "Ruby", "PHP"],
+      "required": true
+    },
+    {
+      "key": "explanation",
+      "label": "Explanation",
+      "role": "rationale"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+# .mailmap — one person, one identity
+#
+# Git records whatever name and email were configured on the machine that made the
+# commit. Anyone who has ever committed from two laptops, changed jobs, or fixed a
+# typo in `git config user.name` therefore shows up as several different people in
+# `git shortlog`, `git blame`, and the repository's Contributors graph.
+#
+# This file collapses those back into one person. It changes what git *reports*; it
+# does not rewrite a single commit.
+#
+# Format — canonical identity first, then the variant to fold into it:
+#
+#   Preferred Name <preferred@email>  <old-or-wrong@email>
+#   Preferred Name <preferred@email>  Old Name <old@email>
+#
+# The first form maps by email alone (the common case: same person, second address).
+# The second also replaces a wrong name. Comments and blank lines are ignored.
+#
+# Verify your entry works:
+#
+#   git shortlog -sne          # one line per person, not one per address
+#   git check-mailmap "Name <email>"
+#
+# Adding yourself here is a correction to the record and never needs justification.
+# Do not add an entry that maps one person's commits onto a different person.
+
+# --- entries below this line ---

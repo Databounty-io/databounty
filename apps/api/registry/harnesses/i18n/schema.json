@@ -1,0 +1,43 @@
+{
+  "datasetType": "i18n",
+  "name": "i18n Locale-Aware Formatting",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Intl.* formatting code that must produce the specific documented output for every locale it claims to support.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "node (full-icu)",
+  "dedupeFields": ["formatting_code", "locales_tested"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "formatting_code",
+      "label": "Formatting code",
+      "role": "solution_code",
+      "lang": "js",
+      "required": true,
+      "help": "An expression referencing `locale` and `value`/`date`."
+    },
+    {
+      "key": "locales_tested",
+      "label": "Locales tested",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "sample_values",
+      "label": "Sample value",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "expected_outputs_per_locale",
+      "label": "Expected output per locale",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "datasetType": "web_scraping",
+  "name": "Web Scraping / HTML Parsing",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Parsing code run against a supplied HTML page; the extracted structure must match exactly. Nothing is fetched — the page is provided inline.",
+  "difficultyLevels": [
+    "beginner",
+    "intermediate",
+    "advanced"
+  ],
+  "pipeline": [
+    "schema",
+    "dedupe",
+    "execution",
+    "llm",
+    "human_audit"
+  ],
+  "executionEnv": "python3 / node",
+  "dedupeFields": [
+    "mock_html_page",
+    "scraping_code"
+  ],
+  "auditOptions": [
+    0,
+    25,
+    100
+  ],
+  "fields": [
+    {
+      "key": "mock_html_page",
+      "label": "HTML page",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "scraping_code",
+      "label": "Parsing code",
+      "role": "solution_code",
+      "required": true,
+      "help": "Reads the `html` variable and assigns `result`."
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "role": "enum",
+      "options": [
+        "Python",
+        "JavaScript"
+      ],
+      "required": true
+    },
+    {
+      "key": "expected_extracted_data",
+      "label": "Expected extraction",
+      "role": "expected_output",
+      "required": true,
+      "help": "JSON."
+    }
+  ]
+}

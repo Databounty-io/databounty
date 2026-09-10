@@ -1,0 +1,45 @@
+{
+  "datasetType": "diff_patch_application",
+  "name": "Diff / Patch Application",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A contributor-authored unified diff (patch_diff) that must apply cleanly (via real `git apply`) to a fixed base file and produce EXACTLY the documented final content -- single-file, conflict-free patch APPLICATION, not merge resolution. The harness always writes base_file_content to one harness-chosen filename ('target.txt') in a fresh workdir; patch_diff is rejected outright if its own diff headers name any other file, or more than one file.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "git (git apply, no `git init`/repo needed -- git apply works directly against plain files in a directory)",
+  "dedupeFields": ["base_file_content", "patch_diff"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Task description",
+      "role": "instruction",
+      "required": true,
+      "help": "Natural-language description of the change the patch must make, e.g. 'fix the off-by-one error in the loop's upper bound', 'add a null-check before dereferencing the config field', 'rename the data parameter to payload throughout', 'extract the duplicated validation logic into a helper function'."
+    },
+    {
+      "key": "base_file_content",
+      "label": "Base file content",
+      "role": "input_code",
+      "required": true,
+      "help": "The original file's full, exact text content, before the patch is applied. Can be any language or plain text -- this category never executes the file's own semantics, only verifies that patch_diff mechanically transforms this exact text into expected_final_content. Written verbatim (no reformatting) to a fixed filename ('target.txt') the harness controls; patch_diff must target that same filename."
+    },
+    {
+      "key": "patch_diff",
+      "label": "Patch (unified diff)",
+      "role": "solution_code",
+      "required": true,
+      "help": "THE GRADED ARTIFACT. A unified diff / git-style patch (the output of `git diff` against a file named target.txt is the expected shape) that transforms base_file_content into expected_final_content. Header lines MUST read exactly '--- a/target.txt' and '+++ b/target.txt' (git's own default unified-diff header convention) -- any other path, or a patch touching more than one file, is rejected outright before it is ever applied. Must contain at least one real content-changing hunk (a context-only, no-op patch is rejected as a dataset defect)."
+    },
+    {
+      "key": "expected_final_content",
+      "label": "Expected final content",
+      "role": "expected_output",
+      "required": true,
+      "help": "The exact file content after patch_diff is applied to base_file_content, compared byte-for-byte (including trailing-newline presence/absence -- unified diffs encode that unambiguously via the standard '\\ No newline at end of file' marker, so a correctly authored patch always reproduces it exactly)."
+    }
+  ]
+}

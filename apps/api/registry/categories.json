@@ -1,0 +1,518 @@
+{
+  "$comment": "Routing table. The category id IS the pipeline selector — nothing else decides which verifier runs. `datasetType` is the id used in Postgres and by the sponsor/contributor surfaces; they are kept identical on purpose so there is one name for a category everywhere. `networkEgress: true` is a SECURITY-RELEVANT flag: it is the only thing that lets a category's sandbox reach the network (see src/services/execution-providers/registry-loader.ts categoryAllowsNetworkEgress and e2b.ts). Every other category is force-blocked regardless of the operator's global EXECUTION_SANDBOX_ALLOW_EGRESS/EGRESS_ALLOWLIST config. Set it ONLY for the three categories documented in registry/README.md as declared no-network exceptions.",
+  "version": 1,
+  "categories": [
+    {
+      "id": "regex_generation",
+      "datasetType": "regex_generation",
+      "name": "Regular Expression Generation",
+      "contract": "regex_match",
+      "requires": [
+        "node"
+      ],
+      "referenceDataset": "16_regex_generation_redos_aware.json",
+      "verified": true
+    },
+    {
+      "id": "data_transformation",
+      "datasetType": "data_transformation",
+      "name": "Data Transformation Scripts",
+      "contract": "transform_io",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "10_data_transformation_scripts.json",
+      "verified": true
+    },
+    {
+      "id": "competitive_programming",
+      "datasetType": "competitive_programming",
+      "name": "Competitive Programming Problems",
+      "contract": "testcases_io",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "08_competitive_programming_problems.json",
+      "verified": true
+    },
+    {
+      "id": "git_merge_resolution",
+      "datasetType": "git_merge_resolution",
+      "name": "Git Merge Conflict Resolution",
+      "contract": "merge_resolution",
+      "requires": [
+        "git"
+      ],
+      "referenceDataset": "12_git_merge_conflict_resolution.json",
+      "verified": true
+    },
+    {
+      "id": "network_protocol_fsm",
+      "datasetType": "network_protocol_fsm",
+      "name": "Network Protocol / State Machine",
+      "contract": "state_sequence",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "36_network_protocol_state_machine_verification.json",
+      "verified": true
+    },
+    {
+      "id": "web_scraping",
+      "datasetType": "web_scraping",
+      "name": "Web Scraping / HTML Parsing",
+      "contract": "html_extract",
+      "requires": [],
+      "referenceDataset": "26_web_scraping_html_parsing_verification.json",
+      "verified": true
+    },
+    {
+      "id": "fail_to_pass",
+      "datasetType": "fail_to_pass",
+      "name": "Fail-to-Pass Test Generation",
+      "contract": "fail-then-pass",
+      "requires": [],
+      "referenceDataset": "05_fail_to_pass_test_generation.json",
+      "verified": true
+    },
+    {
+      "id": "unit_test_gen",
+      "datasetType": "unit_test_gen",
+      "name": "Unit Test Generation",
+      "contract": "single-suite-pass",
+      "requires": [],
+      "referenceDataset": "06_unit_test_generation.json",
+      "verified": true
+    },
+    {
+      "id": "log_parsing",
+      "datasetType": "log_parsing",
+      "name": "Log Parsing / Observability Query",
+      "contract": "exact-output-match",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "35_log_parsing_observability_query_verification.json",
+      "verified": true
+    },
+    {
+      "id": "shell_idempotency",
+      "datasetType": "shell_idempotency",
+      "name": "Shell Script Idempotency",
+      "contract": "state-sequence-match",
+      "requires": [
+        "bash",
+        "md5sum"
+      ],
+      "referenceDataset": "40_shell_script_idempotency_verification.json",
+      "verified": true
+    },
+    {
+      "id": "refactoring",
+      "datasetType": "refactoring",
+      "name": "Refactoring Pairs (Same-Behavior)",
+      "contract": "both-pass-identically",
+      "requires": [],
+      "referenceDataset": "11_refactoring_pairs.json",
+      "verified": true
+    },
+    {
+      "id": "execution_trace",
+      "datasetType": "execution_trace",
+      "name": "Execution Trace / Output Prediction",
+      "contract": "exact-output-match",
+      "requires": [],
+      "referenceDataset": "14_execution_trace_output_prediction.json",
+      "verified": true
+    },
+    {
+      "id": "vulnerability",
+      "datasetType": "vulnerability",
+      "name": "Vulnerability Exploit Verification",
+      "contract": "fail-then-pass",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "17_vulnerability_exploit_verification.json",
+      "verified": true
+    },
+    {
+      "id": "performance",
+      "datasetType": "performance",
+      "name": "Performance / Optimization Pairs",
+      "contract": "both-pass-identically",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "20_performance_optimization_pairs.json",
+      "verified": true
+    },
+    {
+      "id": "static_compilation",
+      "datasetType": "static_compilation",
+      "name": "Static Compilation / Type-Checking",
+      "contract": "expected-failure-match",
+      "requires": [],
+      "referenceDataset": "21_static_compilation_type_checking_verification.json",
+      "verified": true
+    },
+    {
+      "id": "serialization",
+      "datasetType": "serialization",
+      "name": "Serialization / Deserialization Round-Trip",
+      "contract": "exact-output-match",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "31_serialization_deserialization_round_trip_verification.json",
+      "verified": true
+    },
+    {
+      "id": "i18n",
+      "datasetType": "i18n",
+      "name": "i18n Locale-Aware Formatting",
+      "contract": "exact-output-match",
+      "requires": [
+        "node"
+      ],
+      "referenceDataset": "46_internationalization_i18n_locale_formatting_verification.json",
+      "verified": true
+    },
+    {
+      "id": "compression",
+      "datasetType": "compression",
+      "name": "Compression / Decompression",
+      "contract": "exact-output-match",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "49_compression_decompression_correctness_verification.json",
+      "verified": true
+    },
+    {
+      "id": "feature_flag",
+      "datasetType": "feature_flag",
+      "name": "Feature Flag / A-B Rollout Logic",
+      "contract": "distribution-match",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "50_feature_flag_ab_rollout_logic_verification.json",
+      "verified": true
+    },
+    {
+      "id": "terminal_cli",
+      "datasetType": "terminal_cli",
+      "name": "Terminal / CLI Task Execution",
+      "contract": "exit-code-verify",
+      "requires": [
+        "bash"
+      ],
+      "referenceDataset": "07_terminal_cli_task_execution.json",
+      "verified": true
+    },
+    {
+      "id": "api_function_calling",
+      "datasetType": "api_function_calling",
+      "name": "API Call / Function-Calling",
+      "contract": "schema-and-fact-consistency",
+      "requires": [],
+      "referenceDataset": "13_api_call_function_calling.json",
+      "verified": true
+    },
+    {
+      "id": "build_dependency_resolution",
+      "datasetType": "build_dependency_resolution",
+      "name": "Build / Dependency Resolution",
+      "contract": "exit-code-verify",
+      "requires": ["bash"],
+      "networkEgress": true,
+      "referenceDataset": "19_build_dependency_resolution_verification.json",
+      "verified": true
+    },
+    {
+      "id": "dependency_vuln_audit",
+      "datasetType": "dependency_vuln_audit",
+      "name": "Dependency Vulnerability Audit",
+      "contract": "claim-polarity-vs-live-tool-output",
+      "requires": [],
+      "networkEgress": true,
+      "referenceDataset": "39_dependency_vulnerability_audit_verification.json",
+      "verified": true
+    },
+    {
+      "id": "notebook_pipeline",
+      "datasetType": "notebook_pipeline",
+      "name": "Notebook / Data Science Pipeline",
+      "contract": "fixture-accuracy",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "23_notebook_data_science_pipeline_execution.json",
+      "verified": true
+    },
+    {
+      "id": "package_publishing",
+      "datasetType": "package_publishing",
+      "name": "Package / Library Publishing Verification",
+      "contract": "exit-code-verify",
+      "requires": [],
+      "networkEgress": true,
+      "referenceDataset": "29_package_library_publishing_verification.json",
+      "verified": true
+    },
+    {
+      "id": "memory_safety",
+      "datasetType": "memory_safety",
+      "name": "Memory Safety / Resource Leak Detection",
+      "contract": "dynamic-analysis-claim-vs-reality",
+      "requires": [
+        "gcc"
+      ],
+      "referenceDataset": "30_memory_safety_resource_leak_detection.json",
+      "verified": true
+    },
+    {
+      "id": "graphql_resolver",
+      "datasetType": "graphql_resolver",
+      "name": "GraphQL Schema & Resolver",
+      "contract": "resolver-execution-and-structural-consistency",
+      "requires": [
+        "node"
+      ],
+      "referenceDataset": "33_graphql_api_schema_resolver_verification.json",
+      "verified": true
+    },
+    {
+      "id": "auth_flow",
+      "datasetType": "auth_flow",
+      "name": "Auth / Authorization Flow",
+      "contract": "claim-vs-execution contradiction check",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "47_authentication_authorization_flow_verification.json",
+      "verified": true
+    },
+    {
+      "id": "websocket_realtime",
+      "datasetType": "websocket_realtime",
+      "name": "WebSocket / Real-Time Event Stream Verification",
+      "contract": "claim-vs-simulated-execution contradiction check",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "42_websocket_realtime_event_stream_verification.json",
+      "verified": true
+    },
+    {
+      "id": "cryptographic_implementation",
+      "datasetType": "cryptographic_implementation",
+      "name": "Cryptographic Implementation Verification",
+      "contract": "official-test-vector-execution-match",
+      "requires": [
+        "python3"
+      ],
+      "referenceDataset": "28_cryptographic_implementation_verification.json",
+      "verified": true
+    },
+    {
+      "id": "debugging",
+      "datasetType": "debugging",
+      "name": "Debugging / Bug-Fix Pairs",
+      "contract": "fail-then-pass",
+      "requires": [
+        "node",
+        "tsx"
+      ],
+      "referenceDataset": "R1_debugging_bugfix_pairs_ts.json",
+      "verified": true
+    },
+    {
+      "id": "code_translation",
+      "datasetType": "code_translation",
+      "name": "Code Translation (Cross-Language)",
+      "contract": "translation-equivalence-gated-pass",
+      "requires": [],
+      "referenceDataset": "03_code_translation.json",
+      "verified": true
+    },
+    {
+      "id": "implementation",
+      "datasetType": "implementation",
+      "name": "Function / Feature Implementation",
+      "contract": "solution-passes-tests",
+      "requires": [],
+      "referenceDataset": "04_function_feature_implementation.json",
+      "verified": true
+    },
+    {
+      "id": "sql_query_correctness",
+      "datasetType": "sql_query_correctness",
+      "name": "SQL Query Correctness (Text-to-SQL / Execution Accuracy)",
+      "contract": "query-result-match",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "database_migration_correctness",
+      "datasetType": "database_migration_correctness",
+      "name": "Database Migration Correctness",
+      "contract": "state-sequence-match",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "redis_data_structure_semantics",
+      "datasetType": "redis_data_structure_semantics",
+      "name": "Redis Data Structure Semantics",
+      "contract": "live-server-execution-match",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "concurrency_race_detection",
+      "datasetType": "concurrency_race_detection",
+      "name": "Concurrency Race Detection (Go)",
+      "contract": "fail-then-pass",
+      "requires": [
+        "go"
+      ],
+      "verified": false
+    },
+    {
+      "id": "property_based_testing",
+      "datasetType": "property_based_testing",
+      "name": "Property-Based Testing (Hypothesis)",
+      "contract": "counterexample-differential",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "schema_conformance_validation",
+      "datasetType": "schema_conformance_validation",
+      "name": "Schema Conformance Validation (JSON Schema / XSD)",
+      "contract": "schema-conformance-independent-oracle",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "diff_patch_application",
+      "datasetType": "diff_patch_application",
+      "name": "Diff / Patch Application",
+      "contract": "patch-apply-result-match",
+      "requires": [
+        "git"
+      ],
+      "verified": false
+    },
+    {
+      "id": "algorithmic_complexity_verification",
+      "datasetType": "algorithmic_complexity_verification",
+      "name": "Algorithmic Complexity Verification (Empirical Big-O)",
+      "contract": "empirical-complexity-claim-vs-reality",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "http_api_contract_testing",
+      "datasetType": "http_api_contract_testing",
+      "name": "HTTP API Contract Testing",
+      "contract": "live-http-server-contract-match",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "static_lint_rule_fix_verification",
+      "datasetType": "static_lint_rule_fix_verification",
+      "name": "Static Lint Rule Fix Verification (ESLint / Ruff)",
+      "contract": "lint-rule-polarity-match",
+      "requires": [],
+      "verified": false
+    },
+    {
+      "id": "rate_limiting_policy_simulation",
+      "datasetType": "rate_limiting_policy_simulation",
+      "name": "Rate Limiting Policy Simulation",
+      "contract": "policy-simulation-match",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "caching_strategy",
+      "datasetType": "caching_strategy",
+      "name": "Caching Strategy Implementation",
+      "contract": "cache-operation-sequence-match",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "numerical_precision",
+      "datasetType": "numerical_precision",
+      "name": "Numerical Precision / Exact Decimal Rounding",
+      "contract": "exact-decimal-output-match",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "retry_backoff_resilience",
+      "datasetType": "retry_backoff_resilience",
+      "name": "Retry / Backoff Resilience",
+      "contract": "retry-policy-behavior-match",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "ast_codemod_transformation",
+      "datasetType": "ast_codemod_transformation",
+      "name": "AST Codemod Transformation",
+      "contract": "transformation-plus-behavior-preservation",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "cli_argument_parsing",
+      "datasetType": "cli_argument_parsing",
+      "name": "CLI Argument Parsing (argparse)",
+      "contract": "argparse-behavior-match",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    },
+    {
+      "id": "algorithmic_trading_backtest",
+      "datasetType": "algorithmic_trading_backtest",
+      "name": "Algorithmic Trading Strategy Backtest",
+      "contract": "synthetic-backtest-metrics-match",
+      "requires": [
+        "python3"
+      ],
+      "verified": false
+    }
+  ]
+}

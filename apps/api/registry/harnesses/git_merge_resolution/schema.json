@@ -1,0 +1,67 @@
+{
+  "datasetType": "git_merge_resolution",
+  "name": "Git Merge Conflict Resolution",
+  "domain": "coding",
+  "category": "debugging",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Two genuinely conflicting branches over a common ancestor, plus the correct merged result.",
+  "difficultyLevels": [
+    "beginner",
+    "intermediate",
+    "advanced"
+  ],
+  "pipeline": [
+    "schema",
+    "dedupe",
+    "contamination",
+    "execution",
+    "llm",
+    "human_audit"
+  ],
+  "executionEnv": "python3 / node / git",
+  "dedupeFields": [
+    "base_code",
+    "resolved_code"
+  ],
+  "auditOptions": [
+    0,
+    25,
+    100
+  ],
+  "fields": [
+    {
+      "key": "base_code",
+      "label": "Common ancestor",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "branch_a_code",
+      "label": "Branch A",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "branch_b_code",
+      "label": "Branch B",
+      "role": "input_code",
+      "required": true,
+      "help": "Must genuinely conflict with Branch A — an identical change is not a conflict."
+    },
+    {
+      "key": "resolved_code",
+      "label": "Resolved result",
+      "role": "solution_code",
+      "required": true
+    },
+    {
+      "key": "tests",
+      "label": "Tests",
+      "role": "tests",
+      "required": true,
+      "help": "The resolved code must pass these."
+    }
+  ]
+}

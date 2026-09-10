@@ -1,0 +1,42 @@
+{
+  "datasetType": "dependency_vuln_audit",
+  "name": "Dependency Vulnerability Audit",
+  "domain": "coding",
+  "category": "error_diagnosis",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A single-package manifest audited by a real vulnerability-scanning tool (npm audit / pip-audit) against the live registry advisory database, checked against the claimed audit outcome's polarity.",
+  "difficultyLevels": ["beginner", "intermediate"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "npm audit / pip-audit (requires network access to the real registry/advisory database)",
+  "dedupeFields": ["project_manifest", "audit_tool"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "project_manifest",
+      "label": "Project manifest",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "audit_tool",
+      "label": "Audit tool",
+      "role": "enum",
+      "options": ["npm audit", "pip-audit"],
+      "required": true
+    },
+    {
+      "key": "known_vulnerable_dependency",
+      "label": "Known vulnerable dependency",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "expected_audit_findings",
+      "label": "Expected audit findings",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

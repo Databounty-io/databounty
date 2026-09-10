@@ -1,0 +1,53 @@
+{
+  "datasetType": "static_lint_rule_fix_verification",
+  "name": "Static Lint Rule Fix Verification (ESLint / Ruff)",
+  "domain": "coding",
+  "category": "debugging",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A buggy_code -> fixed_code pair checked against a REAL linter (eslint for 'JavaScript/TypeScript' rows, ruff for 'Python' rows), never a simulated/regex-scraped one. buggy_code must genuinely trip a specific, named rule_id when linted with ONLY that one rule enabled; fixed_code must not trip that same rule_id and must remain lint-runnable (a syntax error is a disqualifying non-fix, not a pass). The linter is configured to check EXACTLY rule_id and nothing else, so the verdict can never be satisfied by an unrelated rule happening to differ between the two snippets.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "Real `eslint` (core rules only -- no plugins are baked into the sandbox image, so a plugin-qualified rule_id like '@typescript-eslint/no-unused-vars' or 'react/jsx-key' can never fire and is rejected as an unrecognized rule) for 'JavaScript/TypeScript' rows, run via `eslint --no-config-lookup -c <a harness-generated single-rule flat config> --format json`. Real `ruff check --select <rule_id> --output-format json --isolated` for 'Python' rows. Neither buggy_code nor fixed_code is ever EXECUTED -- both tools are purely static analyzers (parse + AST-visit), so this category never runs contributor code, unlike most of this registry's other categories.",
+  "dedupeFields": ["buggy_code", "fixed_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Task description",
+      "role": "instruction",
+      "required": true,
+      "help": "Natural-language description of the realistic code and the specific bug being fixed, e.g. 'a helper that imports a module it never uses (unused import)' or 'a comparison against None using == instead of is'. Name the general shape of the bug, not the exact rule_id (that goes in its own field)."
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "role": "enum",
+      "options": ["JavaScript/TypeScript", "Python"],
+      "required": true,
+      "help": "Selects which real tool verifies this row: 'JavaScript/TypeScript' runs buggy_code/fixed_code through real eslint (CORE rules only -- see executionEnv), 'Python' runs them through real ruff. Every other field's expected content and valid rule_id namespace depends on this value."
+    },
+    {
+      "key": "rule_id",
+      "label": "Rule ID",
+      "role": "expected_output",
+      "required": true,
+      "help": "The EXACT rule identifier that must fire on buggy_code and must NOT fire on fixed_code, checked against the real tool's own machine-readable output (never a fictitious/invented id). For 'JavaScript/TypeScript': a real ESLint CORE rule name with no plugin prefix, e.g. no-unused-vars, eqeqeq, no-undef, no-var, no-dupe-keys, no-fallthrough, no-empty, prefer-const, no-redeclare, no-unreachable. For 'Python': a real ruff rule code, e.g. F401 (unused import), F841 (unused variable), E711 (comparison to None should be 'is'), E712 (comparison to True/False), B006 (mutable default argument), C401 (unnecessary generator), W605 (invalid escape sequence), SIM102 (nested if). The harness lints with ONLY this one rule enabled (never a full default ruleset), so an unrecognized rule_id (including a plugin-qualified one for JS/TS) is rejected outright as a bad row, and no OTHER rule's behavior has any bearing on the verdict."
+    },
+    {
+      "key": "buggy_code",
+      "label": "Buggy code",
+      "role": "input_code",
+      "required": true,
+      "help": "A complete, realistic snippet (at least a few real lines -- a near-empty or single-token snippet is mechanically rejected as too trivial to prove anything) that genuinely triggers rule_id when linted with the real tool for this row's language, with only that one rule enabled. Must be syntactically valid for its language -- a snippet that only 'triggers' rule_id because the tool never got past a parse error is rejected as a bad row, not scored as a pass."
+    },
+    {
+      "key": "fixed_code",
+      "label": "Fixed code",
+      "role": "solution_code",
+      "required": true,
+      "help": "THE GRADED ARTIFACT. The SAME logical snippet as buggy_code with the specific defect corrected so rule_id no longer fires -- not simply deleted or replaced with a stub. Must remain syntactically valid and lint-runnable (a syntax error here is a disqualifying non-fix, never a pass) and must retain substantial textual/structural overlap with buggy_code (checked mechanically -- see harness.js) so that gutting the snippet down to near-nothing cannot pass merely because an empty file trips no rules. Other, unrelated lint rules are never checked here -- only rule_id's own absence is the contract (see executionEnv)."
+    }
+  ]
+}

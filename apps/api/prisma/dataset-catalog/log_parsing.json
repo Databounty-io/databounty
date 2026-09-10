@@ -1,0 +1,43 @@
+{
+  "datasetType": "log_parsing",
+  "name": "Log Parsing / Observability Query",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Parsing or query code that extracts a metric from a log fixture, checked against the exact expected value.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 (stdlib sqlite3 for SQL-style rows)",
+  "dedupeFields": ["log_fixture", "parsing_or_query_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "log_fixture",
+      "label": "Log fixture",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "parsing_or_query_code",
+      "label": "Parsing / query code",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "query_language",
+      "label": "Query language",
+      "role": "enum",
+      "options": ["Python + regex", "Python + string parsing", "Python + statistics", "Python + datetime parsing", "SQL (log data loaded into a table)"],
+      "required": true
+    },
+    {
+      "key": "expected_extracted_metrics",
+      "label": "Expected extracted metric",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

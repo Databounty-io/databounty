@@ -1,0 +1,42 @@
+{
+  "datasetType": "fail_to_pass",
+  "name": "Fail-to-Pass Test Generation",
+  "domain": "coding",
+  "category": "test_generation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A generated test that fails against the buggy version of a function and passes against the fixed version — proof the test actually exercises the bug.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "polyglot sandbox (python3 / node / java / go / rustc / gcc / g++ / ruby / php / mono)",
+  "dedupeFields": ["buggy_code", "generated_test"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "buggy_code",
+      "label": "Buggy code",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "fixed_code",
+      "label": "Fixed code",
+      "role": "solution_code",
+      "required": true
+    },
+    {
+      "key": "generated_test",
+      "label": "Generated test",
+      "role": "tests",
+      "required": true,
+      "help": "Must FAIL against the buggy code and PASS against the fixed code."
+    },
+    {
+      "key": "target_behavior",
+      "label": "Target behavior",
+      "role": "rationale",
+      "required": true
+    }
+  ]
+}

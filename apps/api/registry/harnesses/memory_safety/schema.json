@@ -1,0 +1,45 @@
+{
+  "datasetType": "memory_safety",
+  "name": "Memory Safety / Resource Leak Detection",
+  "domain": "coding",
+  "category": "debugging",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A claim about what a memory/resource-safety tool (Valgrind or AddressSanitizer) reports for a given C program, checked against what the tool actually reports when the program is compiled and run.",
+  "difficultyLevels": ["intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "gcc + valgrind / gcc -fsanitize=address",
+  "dedupeFields": ["code", "expected_findings"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "code",
+      "label": "C source code",
+      "role": "input_code",
+      "lang": "c",
+      "required": true
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "role": "enum",
+      "required": true,
+      "options": ["C"]
+    },
+    {
+      "key": "analysis_tool",
+      "label": "Analysis tool",
+      "role": "enum",
+      "required": true,
+      "options": ["Valgrind (--leak-check=full)", "AddressSanitizer (-fsanitize=address)"]
+    },
+    {
+      "key": "expected_findings",
+      "label": "Expected findings",
+      "role": "expected_output",
+      "required": true,
+      "help": "Prose description of what the named tool reports for this code. A 'FLAWED: ...' prefix marks a deliberately inaccurate claim."
+    }
+  ]
+}

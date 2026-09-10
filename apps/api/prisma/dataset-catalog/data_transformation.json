@@ -1,0 +1,61 @@
+{
+  "datasetType": "data_transformation",
+  "name": "Data Transformation Scripts",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 2,
+  "status": "active",
+  "description": "A transform() script that receives the raw input sample text and must convert it into exactly the expected output.",
+  "difficultyLevels": [
+    "beginner",
+    "intermediate",
+    "advanced"
+  ],
+  "pipeline": [
+    "schema",
+    "dedupe",
+    "execution",
+    "llm",
+    "human_audit"
+  ],
+  "executionEnv": "python3",
+  "dedupeFields": [
+    "transformation_instruction",
+    "output_code"
+  ],
+  "auditOptions": [
+    0,
+    25,
+    100
+  ],
+  "fields": [
+    {
+      "key": "input_data_sample",
+      "label": "Input sample",
+      "role": "input_code",
+      "required": true,
+      "help": "Raw text passed directly to transform(input); parse CSV, JSON, query strings, or other formats in the script."
+    },
+    {
+      "key": "transformation_instruction",
+      "label": "What the transform should do",
+      "role": "instruction",
+      "required": true
+    },
+    {
+      "key": "output_code",
+      "label": "Transformation script",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true,
+      "help": "Must define transform(input). Input is the raw input sample text."
+    },
+    {
+      "key": "output_data_sample",
+      "label": "Expected output",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "datasetType": "execution_trace",
+  "name": "Execution Trace / Output Prediction",
+  "domain": "coding",
+  "category": "debugging",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Code paired with a predicted output — the code must actually produce that output when run.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "polyglot sandbox (python3 / node / javac / go / rustc / g++)",
+  "dedupeFields": ["code", "input"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "code",
+      "label": "Code",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "input",
+      "label": "Executable traced expression",
+      "role": "input_code",
+      "lang": "py",
+      "required": true,
+      "help": "For Python and JavaScript, provide the expression passed to the harness (for example, running_totals([2, -1, 4])). Do not use prose or add top-level printing."
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "role": "enum",
+      "options": ["Python", "JavaScript", "Java", "Go", "Rust", "C++"],
+      "required": true
+    },
+    {
+      "key": "predicted_output",
+      "label": "Predicted output",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

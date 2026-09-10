@@ -1,0 +1,40 @@
+# Applies to every service in docker-compose.yml -- all four builds use this
+# directory (community/) as their build context, with `dockerfile:
+# apps/<app>/Dockerfile`, precisely so this one file covers all of them.
+#
+# Without this, `COPY apps/<app>/. .` in each Dockerfile would ship whatever
+# node_modules/.next/out/dist already exist on the host checkout (macOS
+# binaries, stale builds) into the Linux build stage, silently shadowing the
+# COPY --from=deps node_modules layer that npm ci just produced correctly.
+
+**/node_modules
+**/.next
+**/out
+**/dist
+**/.turbo
+**/coverage
+
+**/.env
+**/.env.local
+**/.env.*.local
+!**/.env.example
+
+**/.git
+**/.gitignore
+**/*.log
+npm-debug.log*
+
+**/.DS_Store
+**/*.tsbuildinfo
+
+**/.vscode
+**/.idea
+
+# Local artifact storage written by the API's default STORAGE_DRIVER=local
+# driver (config.ts -> storage.localDir "./data/artifacts"). It is gitignored
+# host-only state (see .gitignore "Runtime artifacts and local data"), and
+# `COPY apps/api/. .` in the api build stage would otherwise bake whatever a
+# developer has uploaded locally into the image and invalidate the build cache
+# on every upload. The runner stage creates an empty, correctly-owned
+# data/artifacts itself.
+apps/api/data/

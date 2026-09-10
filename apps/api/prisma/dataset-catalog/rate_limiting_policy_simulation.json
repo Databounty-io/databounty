@@ -1,0 +1,61 @@
+{
+  "datasetType": "rate_limiting_policy_simulation",
+  "name": "Rate Limiting Policy Simulation",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "solution_code (Python) defines a RateLimiter class driven, in order, through a harness-controlled virtual timeline -- key/timestamp pairs, never real wall-clock time and never a real sleep -- and its real admit/reject decision at every event must match that event's curator-declared expected outcome. Ground truth is never trusted blindly: the harness FIRST independently recomputes, from policy_type + policy_params alone (via its own reference implementation of the declared algorithm, never by inspecting solution_code or trusting the row's own claims), what every event's outcome must be, and rejects the row outright if the curator's own declared timeline does not match that independent computation -- solution_code is only ever run against a timeline already proven internally consistent with its own declared policy. solution_code is mechanically forbidden from reading the real system clock: it must decide every outcome purely from the timestamp argument the harness passes in.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 (stdlib only). No real time.sleep()/time.time()/datetime.now() is ever used to drive this category's timing -- every 'second' in a row's timeline is a plain number the harness passes directly to solution_code's RateLimiter.check(key, timestamp), so a timeline spanning simulated hours still verifies in well under a second of real wall-clock time.",
+  "dedupeFields": ["solution_code", "timeline"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Task description",
+      "role": "instruction",
+      "required": true,
+      "help": "Natural-language description of the rate-limited resource/scenario, e.g. 'per-API-key request throttle for a public search endpoint' or 'per-user login-attempt limiter'. This is scenario framing/flavor text for the contributor and human/LLM audit stages -- the harness's own pass/fail decision is driven entirely by policy_type + policy_params + timeline below, never parsed from this field."
+    },
+    {
+      "key": "policy_type",
+      "label": "Policy type",
+      "role": "enum",
+      "options": ["fixed_window", "sliding_window_log", "sliding_window_counter", "token_bucket", "leaky_bucket"],
+      "required": true,
+      "help": "Selects which of this harness's own independently-implemented reference algorithms (see policy_params' help text for each one's EXACT pinned semantics -- boundary rules included) is used both to CROSS-CHECK timeline's own declared expected outcomes before solution_code ever runs, and to grade solution_code's real behavior against."
+    },
+    {
+      "key": "policy_description",
+      "label": "Policy description",
+      "role": "instruction",
+      "required": true,
+      "help": "Natural-language statement of the EXACT policy solution_code must implement, restating policy_params' own numbers in prose so a contributor reading only this field (not policy_params, which is curator-only ground truth never shown as 'the answer' -- see its own help text) knows precisely what to build, e.g. 'fixed window: max 5 requests per 10-second window, resets at each window boundary (aligned to t=0, 10, 20, ...)', 'token bucket: capacity 10 tokens, refills at 2 tokens/sec, bucket starts full', 'sliding window log: max 3 requests in any trailing 5-second window (a request exactly 5.0s old has already expired)', 'leaky bucket: capacity 5, leaks at 1 request/sec, bucket starts empty'. Must state the SAME numbers as policy_params -- the two fields are authored together by the curator, describing one policy from two angles (prose for the contributor to read and implement against; structured JSON for the harness's own oracle to compute against mechanically, exactly as algorithmic_complexity_verification's claimed_complexity enum and network_protocol_fsm's own structured transition table are preferred over parsing an equivalent claim out of free-form prose, a fragility this registry's own feature_flag harness already documents at length)."
+    },
+    {
+      "key": "policy_params",
+      "label": "Policy parameters (curator-authored ground truth, JSON)",
+      "role": "input_code",
+      "required": true,
+      "help": "Curator-authored, fixed context (never graded, never written by the contributor, never sent into solution_code's own Python subprocess at all -- see harness.js's own module doc comment on why the oracle and solution_code run in fully separate address spaces). A JSON object whose required keys depend on policy_type, every value a positive finite number: {\"window_seconds\": N, \"limit\": N} for fixed_window/sliding_window_log/sliding_window_counter; {\"capacity\": N, \"refill_rate\": N} (tokens/sec) for token_bucket; {\"capacity\": N, \"leak_rate\": N} (requests/sec) for leaky_bucket. This is the ONLY input the harness's own independent reference-oracle computation trusts -- it is computed from policy_type + policy_params alone, then cross-checked against every event's own declared expected outcome in timeline BEFORE solution_code is ever run; a row whose timeline does not match what its own declared policy_type/policy_params actually produce is rejected outright as a dataset-authoring defect. EXACT PINNED SEMANTICS PER policy_type (author expected outcomes in timeline by hand-applying these EXACT rules -- boundary ties are resolved as stated, not left to interpretation): fixed_window -- windows are ALIGNED to absolute time 0 (window index = floor(timestamp / window_seconds), e.g. window_seconds=10 gives windows [0,10), [10,20), ...; a request at exactly t=10 is in the SECOND window, with a freshly reset count); sliding_window_log -- per key, a request at time t counts against the LOG of that key's own previously-ADMITTED timestamps still > (t - window_seconds) (an entry EXACTLY window_seconds old has already fully expired and does not count; a rejected request is never added to the log); sliding_window_counter -- weighted estimate = current_fixed_window's own count + previous_fixed_window's own count * (fraction of the previous window still inside the trailing window, i.e. (window_seconds - elapsed_in_current_window) / window_seconds), admitted only if that estimate is strictly less than limit; token_bucket -- bucket starts at FULL capacity at the first request, refills continuously at refill_rate tokens/sec since the key's own last request, capped at capacity, admitted only if at least 1 whole token is available at t (a fractional balance below 1 rejects); leaky_bucket -- bucket starts EMPTY, its level leaks down at leak_rate requests/sec since the key's own last request (floored at 0), admitted only if the level is strictly less than capacity BEFORE adding this request's own unit of load. AUTHORING GUIDANCE: prefer clean integer/simple-decimal timestamps and parameters (avoid values that only agree exactly under floating-point arithmetic) so hand-computed expected outcomes are unambiguous."
+    },
+    {
+      "key": "solution_code",
+      "label": "Rate limiter implementation (Python)",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true,
+      "help": "THE GRADED ARTIFACT. Python code defining EXACTLY ONE top-level class named `RateLimiter`, with a no-argument constructor (`def __init__(self):` -- hardcode this row's own policy_description/policy_params numbers inside it; the harness never passes policy parameters in) and a method `def check(self, key, timestamp):` returning a truthy value to ADMIT the request or a falsy value to REJECT it. The harness instantiates RateLimiter() ONCE per row and calls .check(key, timestamp) once per timeline event, IN ARRAY ORDER, with the EXACT curator-supplied key and timestamp -- a single limiter instance processing one continuous simulated request stream, exactly mirroring how one real limiter service instance handles a live stream over time. CRITICAL, MECHANICALLY ENFORCED CONSTRAINT: RateLimiter must decide admit/reject using ONLY the `timestamp` argument passed into check() -- it must NEVER read the real system clock (no `time.time()`, `time.monotonic()`, `datetime.now()`/`.utcnow()`, or any other real-clock source) and must NEVER really sleep (`time.sleep()` is forbidden -- there is no reason to sleep at all: every 'second' in this category is a plain number, not something to wait for). This is enforced two ways: (1) a static check rejects solution_code outright if it contains a literal import of time/datetime/calendar or a call to any of their clock-reading functions; (2) as a mechanical backstop against any indirect/dynamic import that dodges (1), the harness replaces sys.modules['time']/['datetime']/['calendar'] with stub objects that raise immediately on ANY attribute access, before solution_code is ever executed -- so even a submission that reaches the real module through some other import mechanism gets a non-functional stub, not the real clock. A rate limiter cannot be verified against a simulated timeline at all if it secretly reads real time internally, which is exactly why this constraint exists and is enforced structurally, not merely requested in prose."
+    },
+    {
+      "key": "timeline",
+      "label": "Simulated request timeline",
+      "role": "tests",
+      "required": true,
+      "help": "JSON array of at least 4 events, each `{\"key\": \"<request identity, e.g. an API key or user id>\", \"timestamp\": <virtual clock value -- a plain non-negative number of seconds since epoch 0, NEVER a real wall-clock/Unix timestamp>, \"expected\": \"admit\" | \"reject\"}`, ordered by NON-DECREASING timestamp (a real limiter only ever observes requests in the order they happen). Every `expected` value MUST be curator-computed by hand-applying policy_type/policy_params' own EXACT pinned semantics (see policy_params' help text) -- never guessed, never taken from running any particular implementation. Independently double-checked by the harness's own reference-oracle computation before solution_code ever runs (see policy_params' help text) -- a timeline/policy pairing that is self-consistent but does not actually match what the declared policy produces is rejected as a dataset-authoring defect, not silently accepted. ANTI-HARDCODING, MECHANICALLY ENFORCED: the harness rejects any timeline where every event's expected outcome is identical (all \"admit\" or all \"reject\"), since such a row cannot distinguish a real rate limiter from a stub that always returns one fixed answer regardless of input -- author at least one genuine admit AND at least one genuine reject, ideally by pushing PAST the policy's limit at least once (to prove REJECT is real) and then, where the policy allows it (e.g. after a fixed_window's boundary, or after token_bucket/leaky_bucket refills/drains enough), observing a later ADMIT again (to prove the limiter isn't simply latched permanently closed)."
+    }
+  ]
+}

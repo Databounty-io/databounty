@@ -1,0 +1,42 @@
+{
+  "datasetType": "feature_flag",
+  "name": "Feature Flag / A-B Rollout Logic",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Flag-evaluation code run against a simulated population — the observed enabled rate must match the documented rollout percentage within tolerance.",
+  "difficultyLevels": ["intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution", "llm", "human_audit"],
+  "executionEnv": "python3",
+  "dedupeFields": ["flag_evaluation_code", "rollout_definition"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "flag_evaluation_code",
+      "label": "Flag evaluation code",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "rollout_definition",
+      "label": "Rollout definition",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "simulated_user_contexts",
+      "label": "Simulated user contexts",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "expected_distribution",
+      "label": "Expected distribution",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

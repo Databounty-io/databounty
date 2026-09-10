@@ -1,0 +1,39 @@
+{
+  "datasetType": "http_api_contract_testing",
+  "name": "HTTP API Contract Testing",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Contributor-authored Python (stdlib-only) HTTP server code is actually started as a REAL, separate OS process, bound to a real loopback TCP port (127.0.0.1 -- precedented by websocket_realtime's own real loopback server; this is not network egress). The harness polls for genuine readiness with real connection attempts (never a fixed sleep), then sends a REAL, curator-authored sequence of HTTP requests against it via Python's stdlib http.client -- never by inspecting server_implementation's source, never by trusting anything the server process prints. Every request's real status code / selected response headers / body is compared against that request's own declared expected values. The contract requires at least one pair of requests to the same route with genuinely different input and genuinely different expected output, specifically so a hardcoded/constant-response server cannot pass -- every declared expected value is real, independently-checked ground truth, not merely a consistency check.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 (stdlib only -- http.server/socketserver/BaseHTTPRequestHandler/wsgiref to implement the server; http.client to drive real requests against it). No third-party web framework (Flask/FastAPI/etc) is available in the sandbox for this category -- server_implementation must run with nothing beyond the Python standard library.",
+  "dedupeFields": ["server_implementation", "requests"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Task description",
+      "role": "instruction",
+      "required": true,
+      "help": "Natural-language description of the HTTP API server_implementation must implement, e.g. 'implement an in-memory key-value store: POST /items with JSON body {\"id\":..,\"value\":..} stores it and returns 201 with the stored object; GET /items/<id> returns the stored object or 404; GET /items/<id> for a DIFFERENT id must return that id's own value, not the first one stored (this is the row's anti-hardcoding pair)'. Always describe the FULL request sequence's intent, including which pair of requests exists specifically to prove the response is computed from the request rather than constant."
+    },
+    {
+      "key": "server_implementation",
+      "label": "Server implementation (Python, stdlib only)",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true,
+      "help": "THE GRADED ARTIFACT. A complete, standalone Python program using only the standard library (http.server/socketserver/BaseHTTPRequestHandler, or wsgiref -- no Flask/FastAPI/Django/aiohttp, none of which are available in this sandbox). MUST read its listen port from the `PORT` environment variable (e.g. `port = int(os.environ[\"PORT\"])`), MUST bind to `127.0.0.1` (never `0.0.0.0` -- this is a loopback-only contract, matching websocket_realtime's own convention), and MUST call a real blocking serve loop (e.g. `HTTPServer((\"127.0.0.1\", port), Handler).serve_forever()`) so the harness's own client process can connect to it as a real, separate, long-running server. The harness starts this file as its own OS process (`python3 server_implementation.py`), polls a real socket connection until it accepts (or a timeout elapses -- never a fixed sleep), sends every request in `requests` against it for real, then terminates the process. A server that never binds the given PORT, crashes on startup, or hangs without ever accepting connections is scored a real, honest failure -- never routed to manual review as an environment fault, since this is genuinely graded contributor code."
+    },
+    {
+      "key": "requests",
+      "label": "Request / expected-response contract",
+      "role": "tests",
+      "required": true,
+      "help": "JSON array of at least 2 objects, executed IN ARRAY ORDER against the SAME running server instance (state may accumulate across requests, e.g. a POST followed by a GET of what it just created). Each object: {\"id\": short label for logs (optional), \"method\": one of GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS, \"path\": must start with \"/\", \"headers\": optional object of extra request headers to send, \"body\": optional request body -- a JSON value (auto-serialized) or a literal string, \"expected_status\": REQUIRED integer HTTP status code, \"expected_headers\": optional object -- each declared header (case-insensitive name) must be PRESENT on the real response with EXACTLY this string value; headers not listed here are never checked (do not assert volatile headers like Date/Server/Content-Length), \"expected_body\": optional -- the real response body is compared against this using \"body_match\", \"body_match\": one of \"json\" (both sides parsed as JSON and compared structurally -- object key order never matters, array order always does, numbers compare with small float tolerance), \"exact\" (raw string equality), \"contains\" (real body must contain this text as a substring), or \"absent\" (real body must be empty); if omitted and expected_body is valid JSON, defaults to \"json\", otherwise \"exact\". ANTI-HARDCODING: the harness MECHANICALLY REJECTS (as a bad row, before ever starting the server) any requests array whose every entry shares one identical (expected_status, expected_body) outcome, since such a row could never distinguish a real implementation from a server that ignores its input and always returns one fixed canned response -- every OTHER entry is checked against its own independently declared ground truth, so a constant-response server can satisfy at most one entry and is guaranteed to fail any other whose declared outcome differs. STRONGLY RECOMMENDED authoring pattern for the best real signal (not merely the mechanically-checked minimum): make at least one such differing pair target the exact SAME method+path with different input (e.g. GET /items/A vs GET /items/B expecting each item's OWN value back), which proves the response is computed per-request rather than merely varying by endpoint."
+    }
+  ]
+}

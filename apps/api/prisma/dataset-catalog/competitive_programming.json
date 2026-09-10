@@ -1,0 +1,68 @@
+{
+  "datasetType": "competitive_programming",
+  "name": "Competitive Programming Problems",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "An algorithmic problem with a reference solution checked against every supplied input/output case.",
+  "difficultyLevels": [
+    "beginner",
+    "intermediate",
+    "advanced"
+  ],
+  "pipeline": [
+    "schema",
+    "dedupe",
+    "execution",
+    "llm",
+    "human_audit"
+  ],
+  "executionEnv": "python3",
+  "dedupeFields": [
+    "problem_statement",
+    "reference_solution"
+  ],
+  "auditOptions": [
+    0,
+    25,
+    100
+  ],
+  "fields": [
+    {
+      "key": "problem_statement",
+      "label": "Problem statement",
+      "role": "instruction",
+      "required": true
+    },
+    {
+      "key": "constraints",
+      "label": "Constraints",
+      "role": "rationale",
+      "required": true,
+      "help": "Input size and value bounds."
+    },
+    {
+      "key": "reference_solution",
+      "label": "Reference solution",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true,
+      "help": "Must expose a solve() entrypoint."
+    },
+    {
+      "key": "test_cases",
+      "label": "Test cases",
+      "role": "tests",
+      "required": true,
+      "help": "JSON array of { \"input\": [args...], \"output\": expected }."
+    },
+    {
+      "key": "time_limit_ms",
+      "label": "Time limit (ms)",
+      "role": "enum",
+      "required": true
+    }
+  ]
+}

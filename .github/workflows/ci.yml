@@ -1,0 +1,447 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "20.19.0"
+
+jobs:
+  # Decide which apps this run actually has to check.
+  #
+  # A pull request that only touches apps/web has no reason to run the api test
+  # suite against Postgres or rebuild the api image. Every push to main, every
+  # manual run, and every change outside apps/** that is not documentation
+  # still checks all four apps: the deploy hand-off at the bottom of this file
+  # is dispatched from a main run, so a deploy can never be built on a partial
+  # one.
+  #
+  # The expensive STEPS are gated, not the jobs. Job names here are required
+  # status checks; a job that sometimes does not exist is a required check that
+  # silently stops being required, and a matrix built from a filtered list can
+  # produce zero jobs. So every job below still runs and reports — it just
+  # no-ops in about fifteen seconds when its app was not touched.
+  changes:
+    name: Decide what to run
+    runs-on: ubuntu-latest
+    outputs:
+      affected: ${{ steps.filter.outputs.affected }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Both branch tips, so the merge base below resolves.
+          fetch-depth: 0
+
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          ALL='["api","web","admin","landing"]'
+
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "affected=$ALL" >> "$GITHUB_OUTPUT"
+            echo "**Full run** — \`$EVENT\` checks every app." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Compare against the merge base, not the base branch tip: commits
+          # that landed on main after this branch started are not this pull
+          # request's changes, and diffing against the tip would attribute them
+          # here.
+          base=$(git merge-base "$BASE" "$HEAD")
+          files=$(git diff --name-only "$base" "$HEAD")
+
+          api=false
+          web=false
+          admin=false
+          landing=false
+          shared=false
+
+          # A plain heredoc, not a pipe: a `while read` on the right-hand side
+          # of a pipe runs in a subshell and every assignment above would be
+          # discarded when the loop ends.
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in
+              apps/api/*) api=true ;;
+              apps/web/*) web=true ;;
+              apps/admin/*) admin=true ;;
+              apps/landing/*) landing=true ;;
+              # Prose cannot break a build.
+              *.md|docs/*|.github/ISSUE_TEMPLATE/*|LICENSE|NOTICE|.github/CODEOWNERS) ;;
+              # Everything else is shared and reaches all four apps: the
+              # compose file, this workflow, the root .dockerignore every image
+              # build reads. Fail toward running more, never less.
+              *) shared=true ;;
+            esac
+          done <<EOF
+          $files
+          EOF
+
+          if [ "$shared" = true ]; then
+            affected="$ALL"
+            note="a change outside apps/** — everything runs"
+          else
+            list=""
+            for app in api web admin landing; do
+              eval "hit=\$$app"
+              if [ "$hit" = true ]; then list="$list\"$app\","; fi
+            done
+            affected="[${list%,}]"
+            note="changed paths under apps/**"
+          fi
+
+          echo "affected=$affected" >> "$GITHUB_OUTPUT"
+          {
+            echo "**Checking:** \`$affected\` — $note."
+            echo
+            echo "<details><summary>Changed files</summary>"
+            echo
+            echo '```'
+            echo "$files"
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # A migration that can destroy existing rows must not reach main unnoticed.
+  #
+  # This is not a hypothetical class of bug. `prisma migrate dev` diffs
+  # schema.prisma against the database and auto-generates DROP statements for
+  # any object the datamodel does not declare, placing them at the TOP of an
+  # otherwise unrelated migration. In V1 that silently destroyed
+  # `bounties_title_trgm_idx`: added in raw SQL on 2026-07-18, dropped 2h46m
+  # later by a migration named "add_submission_lsh_bands", noticed 51 days
+  # later. The same mechanism emits DROP COLUMN for a removed field, which
+  # would delete real user data on the next deploy.
+  #
+  # pull_request only, like `dco` above: there is no "the migrations being
+  # proposed" on a plain push to main.
+  migration-safety:
+    name: Migration safety
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The gate diffs the proposed migrations against the base branch.
+          fetch-depth: 0
+
+      - name: Destructive-statement gate
+        working-directory: apps/api
+        run: bash scripts/check-migration-safety.sh "origin/${{ github.base_ref }}"
+
+  # Every commit in a pull request must carry a DCO sign-off trailer. This is a
+  # record-keeping gate, not a code check — it runs on pull_request only, because
+  # there is no "the commits being proposed" on a plain push to main.
+  dco:
+    name: DCO sign-off
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Need both branch tips to enumerate just this PR's commits.
+          fetch-depth: 0
+
+      - name: Check Signed-off-by on every commit
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          missing=0
+          # Merge commits are exempt: their message is generated, not authored.
+          for sha in $(git rev-list --no-merges "$BASE".."$HEAD"); do
+            if ! git log -1 --format=%B "$sha" | grep -qiE '^Signed-off-by: .+ <[^<>@]+@[^<>@]+>[[:space:]]*$'; then
+              echo "::error::Commit $sha has no valid Signed-off-by trailer."
+              git log -1 --format='          %h %s (%an <%ae>)' "$sha"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            cat <<'MSG'
+
+          One or more commits are missing a DCO sign-off.
+
+          Fix the most recent commit:      git commit --amend -s --no-edit
+          Fix the last N commits:          git rebase --signoff HEAD~N
+          Then:                            git push --force-with-lease
+
+          What the sign-off certifies, and why we use a DCO instead of a CLA:
+          CONTRIBUTING.md → "Certifying your contribution (DCO)".
+          MSG
+            exit 1
+          fi
+          echo "All commits signed off."
+
+  # The three Next.js apps: typecheck, lint, production build.
+  # No database and no API needed — these are static checks and a compile.
+  frontends:
+    name: ${{ matrix.app }} (typecheck · lint · build)
+    runs-on: ubuntu-latest
+    needs: changes
+    env:
+      RUN: ${{ contains(fromJSON(needs.changes.outputs.affected), matrix.app) && 'true' || 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [web, admin, landing]
+    defaults:
+      run:
+        working-directory: apps/${{ matrix.app }}
+    steps:
+      - name: Nothing to check
+        if: env.RUN != 'true'
+        run: echo "This pull request changes nothing under apps/${{ matrix.app }} or any shared path, so there is nothing to typecheck, lint or build."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.RUN == 'true'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: env.RUN == 'true'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/${{ matrix.app }}/package-lock.json
+
+      - if: env.RUN == 'true'
+        run: npm ci
+
+      - if: env.RUN == 'true'
+        run: npm run typecheck
+
+      - if: env.RUN == 'true'
+        run: npm run lint
+
+      # Placeholder values only — the build must not require a reachable API.
+      # If this step starts failing because it wants real data, that is the bug.
+      #
+      # NEXT_PUBLIC_API_URL is the API's ORIGIN, with no /v1 suffix: every
+      # caller appends its own /v1 path (apps/web/lib/api-endpoints.ts,
+      # apps/admin/lib/*, apps/landing/lib/public-data.ts all build
+      # `${API_URL}/v1/...`). A /v1 here would produce /v1/v1/... — harmless in
+      # a build-only job, which is exactly why it stayed wrong, but it is the
+      # value people copy. Matches docker-compose.yml and each Dockerfile's ARG.
+      - name: Build
+        if: env.RUN == 'true'
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:4000
+          NEXT_PUBLIC_DASHBOARD_URL: http://localhost:53000
+          NEXT_PUBLIC_ADMIN_URL: http://localhost:3002
+          NEXT_PUBLIC_LANDING_URL: http://localhost:3001
+
+  # apps/api: typecheck, build, and the full Vitest suite against a real Postgres.
+  api:
+    name: api (typecheck · build · test)
+    runs-on: ubuntu-latest
+    needs: changes
+    defaults:
+      run:
+        working-directory: apps/api
+
+    # The Postgres service container still starts on a run that has nothing to
+    # do — `services` has no `if`. That is a few seconds, against the several
+    # minutes the suite itself takes, and it keeps this job's name reporting on
+    # every run.
+    services:
+      postgres:
+        image: postgres:17
+        # The database name is NOT arbitrary. Every integration test file asserts that
+        # DATABASE_URL contains "databounty_community_parity_verify" and throws otherwise —
+        # a deliberate guard so the suite can never write to a database someone cares about.
+        # Renaming this breaks 34 test files on purpose. See CONTRIBUTING.md.
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: databounty_community_parity_verify
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      RUN: ${{ contains(fromJSON(needs.changes.outputs.affected), 'api') && 'true' || 'false' }}
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/databounty_community_parity_verify
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/databounty_community_parity_verify
+      SESSION_SECRET: ci-only-session-secret-not-used-anywhere-real
+      NODE_ENV: test
+
+    steps:
+      - name: Nothing to check
+        if: env.RUN != 'true'
+        run: echo "This pull request changes nothing under apps/api or any shared path, so there is nothing to typecheck, build or test."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.RUN == 'true'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: env.RUN == 'true'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/api/package-lock.json
+
+      - if: env.RUN == 'true'
+        run: npm ci
+
+      - name: Generate Prisma client
+        if: env.RUN == 'true'
+        run: npx prisma generate
+
+      - name: Apply migrations
+        if: env.RUN == 'true'
+        run: npx prisma migrate deploy
+
+      - name: Seed dataset catalog
+        if: env.RUN == 'true'
+        run: npx tsx prisma/seed-catalog.ts
+
+      - if: env.RUN == 'true'
+        run: npm run typecheck
+
+      - if: env.RUN == 'true'
+        run: npm run build
+
+      # Unit and integration tests. Database-mutating integration files share
+      # this disposable database, so the package test command serializes them.
+      - name: Test
+        if: env.RUN == 'true'
+        run: npm test
+
+  # Every Dockerfile must still build. Catches a dependency or lockfile change
+  # that works locally but breaks the image, which is how most people run this.
+  docker:
+    name: docker build (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    needs: changes
+    env:
+      RUN: ${{ contains(fromJSON(needs.changes.outputs.affected), matrix.app) && 'true' || 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [api, web, admin, landing]
+    steps:
+      - name: Nothing to build
+        if: env.RUN != 'true'
+        run: echo "This pull request changes nothing under apps/${{ matrix.app }} or any shared path, so the image cannot have changed."
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.RUN == 'true'
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        if: env.RUN == 'true'
+
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        if: env.RUN == 'true'
+        with:
+          # All Dockerfiles COPY from apps/<app>/..., so they intentionally
+          # share the repository root as their build context. Keep this in
+          # sync with docker-compose.yml and the root .dockerignore.
+          context: .
+          file: apps/${{ matrix.app }}/Dockerfile
+          push: false
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+  # Hand-off to the deploy pipeline. Only real pushes to main deploy; a PR run
+  # must never trigger a deploy. `dco` runs only on pull_request, so it is not
+  # in `needs` (a skipped dependency would keep this job from ever firing).
+  # `github.sha` is the full 40-character commit id — the infra workflow
+  # checks out exactly that commit, and a short sha would not resolve there.
+  # The `changes` job marks every non-pull_request run as all-four-apps, so a
+  # deploy is never dispatched from a run that checked only part of the tree.
+  #
+  # THIS JOB IS DELIBERATELY SCOPED TO THE TWO KNOWN APPLICATION TARGETS. It
+  # dispatches into a PRIVATE infra repository chosen from `github.repository`
+  # (`databounty` -> `databounty-infra-prod`, `databounty-community-dev` ->
+  # `databounty-infra`) and needs the
+  # `INFRA_DISPATCH_TOKEN` secret, so anywhere else — a fork, a public export
+  # snapshot, a mirror — it has nothing to dispatch with and nothing to deploy
+  # to. Without the identity gate below such a repository gets green checks
+  # followed by one permanently red "Notify databounty-infra" job, and the
+  # public snapshot advertises our deployment coupling. The four conditions:
+  #
+  #   1. `push` to `main` only — a pull request must never deploy (unchanged).
+  #   2. `github.repository` — only the two private application targets named
+  #      in the repository rules dispatch, and each one resolves its OWN infra
+  #      repository via INFRA_REPO below. This is what lets the dev tree and
+  #      the public snapshot share one identical file instead of maintaining a
+  #      hand-ported divergence that silently reverts on the next sync. Rename
+  #      a repository and this stops, loudly and on purpose.
+  #   3. `github.event.repository.fork == false` — belt and braces. A fork
+  #      already fails (2), but this states the intent for any future clone
+  #      that keeps the name.
+  #   4. `vars.INFRA_DISPATCH_DISABLED` — an explicit off switch for the owner
+  #      (set the repository variable to `true` to pause deploy hand-off
+  #      without editing this file). It defaults to enabled when unset, so the
+  #      existing dev pipeline needs NO new configuration to keep working.
+  notify-infra:
+    name: Notify deploy infra
+    needs: [frontends, api, docker]
+    if: >-
+      github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && (github.repository == 'Databounty-io/databounty-community-dev'
+          || github.repository == 'Databounty-io/databounty')
+      && github.event.repository.fork == false
+      && vars.INFRA_DISPATCH_DISABLED != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # INFRA_DISPATCH_TOKEN is a fine-grained PAT scoped to ONLY the infra
+      # repository this application target deploys through (see INFRA_REPO
+      # below), with ONLY "Contents: write" (the minimum the
+      # repository_dispatch API accepts). Each application repository stores
+      # its own, as a repository SECRET so it is masked in logs.
+      - name: Dispatch deploy event to the matching infra repository
+        env:
+          GH_TOKEN: ${{ secrets.INFRA_DISPATCH_TOKEN }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          # Chosen from github.repository so ONE file serves both application
+          # targets. Each repository holds its own INFRA_DISPATCH_TOKEN, scoped
+          # to its own infra repository, so the credential follows the target
+          # automatically and neither can dispatch into the other's pipeline.
+          INFRA_REPO: ${{ github.repository == 'Databounty-io/databounty' && 'databounty-infra-prod' || 'databounty-infra' }}
+          # The event_type MUST travel with INFRA_REPO. Each infra workflow
+          # filters `repository_dispatch: types:` on its own name
+          # (databounty-infra -> community-dev-deploy, databounty-infra-prod ->
+          # databounty-prod-deploy), and a dispatch whose type matches nothing
+          # is still ACCEPTED by the API with a 204 -- so `curl -f` succeeds,
+          # this job reports green, and no deploy ever runs. Deriving both from
+          # the same condition is what keeps that failure impossible.
+          EVENT_TYPE: ${{ github.repository == 'Databounty-io/databounty' && 'databounty-prod-deploy' || 'community-dev-deploy' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::INFRA_DISPATCH_TOKEN secret is not set; cannot dispatch deploy."
+            exit 1
+          fi
+          curl -sS -f -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/Databounty-io/${INFRA_REPO}/dispatches" \
+            -d "$(jq -nc --arg sha "$COMMIT_SHA" --arg run_id "$RUN_ID" --arg event_type "$EVENT_TYPE" \
+                  '{event_type: $event_type, client_payload: {sha: $sha, run_id: $run_id}}')"

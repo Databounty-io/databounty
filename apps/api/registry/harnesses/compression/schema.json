@@ -1,0 +1,49 @@
+{
+  "datasetType": "compression",
+  "name": "Compression / Decompression",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Compression + decompression code that must round-trip the sample input byte-for-byte.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 (zlib/gzip/bz2/lzma stdlib)",
+  "dedupeFields": ["algorithm", "sample_input"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "algorithm",
+      "label": "Algorithm",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "sample_input",
+      "label": "Sample input",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "compression_code",
+      "label": "Compression code",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "decompression_code",
+      "label": "Decompression code",
+      "role": "tests",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "expected_result",
+      "label": "Expected result",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "datasetType": "code_translation",
+  "name": "Code Translation (Cross-Language)",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Code translated from one language to another — target_code must pass the same logical tests as source_code, must implement the same function (not a substitute), the declared source_language must match what source_code actually parses as, and the tests must assert on values (not merely a type).",
+  "difficultyLevels": ["intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution", "llm", "human_audit"],
+  "executionEnv": "polyglot sandbox (python3 / node / tsx / javac+java / go / rustc / gcc+g++ / ruby / php / mono)",
+  "dedupeFields": ["source_code", "target_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "source_code",
+      "label": "Source code",
+      "role": "input_code",
+      "required": true
+    },
+    {
+      "key": "source_language",
+      "label": "Source language",
+      "role": "enum",
+      "options": ["Python", "JavaScript", "TypeScript", "Java", "Go", "Rust", "C++", "C#", "Ruby", "PHP"],
+      "required": true
+    },
+    {
+      "key": "target_code",
+      "label": "Target code",
+      "role": "solution_code",
+      "required": true
+    },
+    {
+      "key": "target_language",
+      "label": "Target language",
+      "role": "enum",
+      "options": ["Python", "JavaScript", "TypeScript", "Java", "Go", "Rust", "C++", "C#", "Ruby", "PHP"],
+      "required": true
+    },
+    {
+      "key": "tests",
+      "label": "Shared logical tests",
+      "role": "tests",
+      "required": true,
+      "help": "target_code must pass these, written in target_language."
+    }
+  ]
+}

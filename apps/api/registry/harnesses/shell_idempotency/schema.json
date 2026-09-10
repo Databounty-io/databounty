@@ -1,0 +1,43 @@
+{
+  "datasetType": "shell_idempotency",
+  "name": "Shell Script Idempotency",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A shell script whose recorded second-run behavior (idempotent no-op, or a described change) must match what actually happens when it is run twice.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "bash",
+  "dedupeFields": ["script", "environment_setup"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "environment_setup",
+      "label": "Environment setup",
+      "role": "input_code",
+      "help": "Runs once before either invocation of the script — creates any files/state the script assumes already exist."
+    },
+    {
+      "key": "script",
+      "label": "Script",
+      "role": "solution_code",
+      "lang": "sh",
+      "required": true
+    },
+    {
+      "key": "expected_first_run_result",
+      "label": "Expected first-run result",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "expected_second_run_result",
+      "label": "Expected second-run result",
+      "role": "expected_output",
+      "required": true,
+      "help": "Describes whether re-running is a safe no-op or causes a further change."
+    }
+  ]
+}

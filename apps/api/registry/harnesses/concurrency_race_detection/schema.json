@@ -1,0 +1,47 @@
+{
+  "datasetType": "concurrency_race_detection",
+  "name": "Concurrency Race Detection (Go)",
+  "domain": "coding",
+  "category": "debugging",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A buggy (genuinely racy) Go program paired with a fixed (race-free) implementation of the same concurrent task. Verified by actually compiling and running BOTH under Go's real `go run -race` data-race detector -- never by static inspection, never by 'run it N times and eyeball the output' -- buggy_code must trigger a real `WARNING: DATA RACE` report at least once across a bounded number of attempts, and fixed_code must run clean (no race reported) AND produce exactly expected_functional_output on every attempt tried.",
+  "difficultyLevels": ["intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "go1.22 (`go run -race`, CGO_ENABLED=1, gcc-backed ThreadSanitizer runtime) -- the real Go data-race detector, not a simulated or static approximation",
+  "dedupeFields": ["buggy_code", "fixed_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Task description",
+      "role": "instruction",
+      "required": true,
+      "help": "Natural-language description of the concurrent behavior both programs implement, e.g. 'increment a shared counter from 10 goroutines, 1000 times each, then print the final value', 'N worker goroutines append their results into a shared slice, then print the sorted total', 'a shared in-memory cache is read and written concurrently by multiple goroutines'. Keep the scenario minimal and single-purpose -- see fixed_code's help text for why."
+    },
+    {
+      "key": "buggy_code",
+      "label": "Buggy (racy) Go code",
+      "role": "input_code",
+      "lang": "go",
+      "required": true,
+      "help": "A COMPLETE, standalone, compilable Go program (`package main` + its own `func main()`, spawning and coordinating its own goroutines -- Go has no snippet+injected-driver mode) that implements task_description with a genuine, unsynchronized concurrent access to shared state (no mutex/channel/atomic protecting the shared read-modify-write or read/write pair). Verified by running `go run -race` up to 3 times and requiring at least one run to report a real `WARNING: DATA RACE`. Its stdout is NOT checked against expected_functional_output -- a race's observable value is inherently unreliable; the detector's own diagnostic is the authoritative signal. IMPORTANT (residual, not fully closeable by the harness): `-race` reports ANY race anywhere in the program, not specifically the intended one -- keep this to a single, minimal, unambiguous race (one shared variable, one missing synchronization primitive) so a genuine detection can only plausibly mean the intended bug, mirroring memory_safety's own 'one bug class per program, no plausible alternate finding' convention. PREFER a shared counter, shared slice/array index, or shared struct field over a shared map for this bug: an unsynchronized concurrent map write also trips Go's own separate built-in runtime guard ('fatal error: concurrent map writes'), which is a different signal than -race's own report and is not confirmed to always lose that race to the detector's report."
+    },
+    {
+      "key": "fixed_code",
+      "label": "Fixed (race-free) Go code",
+      "role": "solution_code",
+      "lang": "go",
+      "required": true,
+      "help": "The SAME logical task as buggy_code, also a complete standalone Go program, implemented with real synchronization (sync.Mutex, sync.RWMutex, channels, sync/atomic, and/or sync.WaitGroup for coordination) so the shared state is never accessed unsynchronized. Verified by running `go run -race` up to 3 times and requiring EVERY run to report no race AND print exactly expected_functional_output -- not just one lucky run. A deterministic final result (e.g. print a single final counter value, or a sorted/canonical view of shared state) is required so the comparison is exact and stable regardless of goroutine scheduling order."
+    },
+    {
+      "key": "expected_functional_output",
+      "label": "Expected output (from fixed_code)",
+      "role": "expected_output",
+      "required": true,
+      "help": "The exact stdout fixed_code must print (compared after trimming leading/trailing whitespace), e.g. '5000' for a 5-goroutine x 1000-increment counter. buggy_code is NOT required to match this -- a data race's observed value is inherently unreliable, so only the race detector's own diagnostic is checked on the buggy side."
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "datasetType": "sql_query_correctness",
+  "name": "SQL Query Correctness (Text-to-SQL / Execution Accuracy)",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A natural-language question over a SQLite fixture, answered with a single read-only SELECT statement. Verified by actually executing sql_query against a fresh database built from schema_ddl + fixture_data and comparing the real result set to expected_result -- the Spider/BIRD 'execution accuracy' methodology, not a text/AST comparison against a reference query.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 (stdlib sqlite3 -- no separate database server)",
+  "dedupeFields": ["fixture_data", "sql_query"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Task / question",
+      "role": "instruction",
+      "required": true,
+      "help": "The natural-language question sql_query must answer over the fixture defined by schema_ddl + fixture_data."
+    },
+    {
+      "key": "schema_ddl",
+      "label": "Schema (DDL)",
+      "role": "input_code",
+      "lang": "sql",
+      "required": true,
+      "help": "One or more CREATE TABLE statements defining the fixture. Executed via sqlite3 executescript() into a fresh database, before fixture_data. ATTACH/DETACH/PRAGMA are blocked as a sandbox-hygiene measure and are never needed here."
+    },
+    {
+      "key": "fixture_data",
+      "label": "Fixture data (INSERT statements)",
+      "role": "input_code",
+      "lang": "sql",
+      "required": true,
+      "help": "INSERT statements populating the tables declared in schema_ddl, executed via executescript() after schema_ddl. Use real, varied data -- the harness re-verifies that sql_query's result actually depends on this data (see the anti-hardcoding check) by re-running the same query against a generically mutated copy of it."
+    },
+    {
+      "key": "sql_query",
+      "label": "SQL query",
+      "role": "solution_code",
+      "lang": "sql",
+      "required": true,
+      "help": "A single, read-only SELECT (or WITH ... SELECT, including recursive CTEs) statement that answers task_description. No DDL/DML, no ATTACH/PRAGMA, no stacked ;-separated statements -- any of those are rejected before the query is ever executed, not merely disallowed by convention."
+    },
+    {
+      "key": "query_category",
+      "label": "Query category",
+      "role": "enum",
+      "options": [
+        "single-table filter",
+        "aggregation / GROUP BY",
+        "join",
+        "subquery",
+        "window function",
+        "CTE"
+      ],
+      "required": true,
+      "help": "Forced diversity dimension for the dataset -- not read by the verifier itself."
+    },
+    {
+      "key": "expected_result",
+      "label": "Expected result",
+      "role": "expected_output",
+      "required": true,
+      "help": "JSON array of row-arrays, in column-output order, e.g. [[1, \"Ada\", 36], [2, \"Grace\", 41]]. Column NAMES are never compared -- only cell values, by position -- matching Python's sqlite3 cursor.fetchall() shape and avoiding any requirement to alias computed/aggregate columns. Encode SQL NULL as JSON null. Encode SQLite's 0/1 boolean convention as a JSON number (0/1 preferred; JSON true/false is also accepted as a convenience). If sql_query contains ORDER BY, row order must match exactly; otherwise rows are compared as a multiset (order-insensitive) -- this exactly mirrors the BIRD/Spider text-to-SQL execution-accuracy methodology."
+    }
+  ]
+}

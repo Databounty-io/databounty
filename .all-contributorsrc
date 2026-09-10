@@ -1,0 +1,40 @@
+{
+  "$comment": [
+    "Config for the all-contributors bot (https://allcontributors.org).",
+    "projectOwner/projectName are set to Databounty-io/databounty, the recorded future",
+    "Community destination. OWNER CONFIRMATION REQUIRED: the destination is only final at",
+    "export time, so re-check it against the repository rules before the first publication —",
+    "the bot cannot resolve avatars or profile links if it points at the wrong repository, and",
+    "the dev repository (databounty-community-dev) is never the destination.",
+    "Note .github/ISSUE_TEMPLATE/config.yml still carries its own OWNER/REPO placeholder and",
+    "must be updated in the same change.",
+    "The generated table lives in CONTRIBUTORS.md between the ALL-CONTRIBUTORS-LIST markers.",
+    "contributors stays empty until a verified GitHub username exists for each credited person:",
+    "the bot keys entries on the username, and no account may be looked up from a guessed",
+    "identity. Email-only credits live in CONTRIBUTORS.md outside the generated block."
+  ],
+  "projectOwner": "Databounty-io",
+  "projectName": "databounty",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": [
+    "CONTRIBUTORS.md"
+  ],
+  "imageSize": 80,
+  "contributorsPerLine": 6,
+  "contributorsSortAlphabetically": true,
+  "badgeTemplate": "",
+  "commit": true,
+  "commitConvention": "none",
+  "commitType": "docs",
+  "linkToUsage": false,
+  "skipCi": true,
+  "types": {
+    "data": {
+      "symbol": "🔣",
+      "description": "Dataset types, validation harnesses, catalog content",
+      "link": "https://github.com/<all-contributors.projectOwner>/<all-contributors.projectName>/commits?author=<all-contributors.username>"
+    }
+  },
+  "contributors": []
+}

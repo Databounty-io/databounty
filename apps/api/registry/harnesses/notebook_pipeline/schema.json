@@ -1,0 +1,43 @@
+{
+  "datasetType": "notebook_pipeline",
+  "name": "Notebook / Data Science Pipeline",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "Notebook cells that build a data fixture matching the row count and shape they're documented to produce.",
+  "difficultyLevels": ["beginner", "intermediate"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 (pandas/numpy/scikit-learn)",
+  "dedupeFields": ["notebook_cells", "dataset_fixture_ref"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "notebook_cells",
+      "label": "Notebook cells",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true
+    },
+    {
+      "key": "required_libraries",
+      "label": "Required libraries",
+      "role": "rationale",
+      "required": true
+    },
+    {
+      "key": "expected_artifacts",
+      "label": "Expected artifacts",
+      "role": "rationale",
+      "required": true,
+      "help": "Describes a downstream analysis step not mechanically checked by this harness."
+    },
+    {
+      "key": "dataset_fixture_ref",
+      "label": "Dataset fixture reference",
+      "role": "expected_output",
+      "required": true
+    }
+  ]
+}

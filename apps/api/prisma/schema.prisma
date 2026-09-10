@@ -1,0 +1,3024 @@
+// DataBounty Community API Schema
+// Clean domain models and enums for open community collaboration.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum AuthMethod {
+  google
+  email
+}
+
+enum UserStatus {
+  active
+  suspended
+}
+
+enum Role {
+  sponsor // Deprecated persona, not a role — retired 2026-08-03, see User.persona. Kept so historical rows parse. Granted to nobody; checked by nothing.
+  contributor // Deprecated persona, not a role — see `sponsor` above.
+  validator // Deprecated persona, not a role — see `sponsor` above.
+  admin // Full admin-console access. Never self-assignable.
+  member // Admin-console: broad operational access (writes), not settings/security-sensitive routes. Never self-assignable.
+  support // Admin-console: read-only + benign self-service actions. Never self-assignable.
+}
+
+enum ChannelKind {
+  email
+  telegram
+  discord
+  slack
+  google_chat
+  microsoft_teams
+}
+
+enum NotificationStatus {
+  pending
+  digesting
+  done
+  dead
+}
+
+enum NotificationDeliveryStatus {
+  pending
+  processing
+  sent
+  failed
+  dead
+}
+
+enum JobStatus {
+  pending
+  processing
+  done
+  failed
+  dead
+  cancelled
+}
+
+enum ProfileSourceKind {
+  linkedin
+  github
+  scholar
+  orcid
+  kaggle
+  x
+  website
+}
+
+enum SponsorUse {
+  training
+  evaluation
+  fine_tuning
+  benchmark
+}
+
+enum ApiKeyScope {
+  read
+  contribute
+  validate
+  artifact
+  sponsor
+  // Account setup the operator can grant an agent: claim a public handle,
+  // set the landing-dashboard preference, mark onboarding complete. Kept off
+  // `read` and off the work scopes on purpose — the handle is the operator's
+  // public identity and what published dataset credit attaches to, so it is
+  // its own consent checkbox rather than a side effect of "submit work".
+  // Still cannot verify an email, change a password, touch money, or read
+  // admin surfaces.
+  account
+}
+
+enum DatasetCategory {
+  debugging
+  implementation
+  test_generation
+  error_diagnosis
+  migration
+}
+
+enum DomainId {
+  coding
+  legal
+  healthcare
+  finance
+  science
+}
+
+enum TrustTier {
+  execution_verified
+  llm_verified
+  expert_audited
+}
+
+enum DatasetTypeStatus {
+  active
+  draft
+  coming_soon
+  platform_review
+}
+
+enum DatasetTypeOrigin {
+  platform
+  sponsor
+}
+
+enum AuditMode {
+  llm_only
+  partial
+  full
+}
+
+enum GenerationMethod {
+  human
+  ai_assisted
+  ai_generated
+}
+
+enum BountyStatus {
+  draft
+  planning
+  platform_review
+  active
+  paused
+  closing
+  export_ready
+  completed
+  partially_completed
+  cancelled
+  disputed
+}
+
+enum BountyKind {
+  community
+}
+
+enum DatasetRequestStatus {
+  submitted
+  under_review
+  changes_requested
+  approved
+  declined
+  disputed
+  implemented
+}
+
+enum CommunityPublicationStatus {
+  not_requested
+  pending
+  publishing
+  published
+  failed
+  manual_review
+  // An admin withdrew an already-published dataset: public access has been
+  // removed at the provider and confirmed before this state is recorded.
+  // Distinct from `failed` (the push itself never succeeded).
+  retracted
+  // Per-target only (DatasetPublication.status). The target is enabled but its
+  // credential/namespace is missing, so nothing was attempted. Distinct from
+  // `failed`, which means a real attempt did not succeed — conflating the two
+  // would put a config gap into the operator's retry queue forever.
+  not_configured
+  // Per-target only, and only for an `assisted_manual` target: the bundle is
+  // built and downloadable, and the platform is waiting on a human to complete
+  // the portal upload and record the URL. Never rendered as published.
+  awaiting_manual_upload
+}
+
+enum PublicationTarget {
+  huggingface
+  github
+  aikosh
+}
+
+enum KarmaEventType {
+  community_item_accepted
+  community_item_reversed
+  community_audit_completed
+  community_request_approved
+  community_bounty_published
+  community_flag_confirmed
+  community_publish_bonus
+  admin_adjustment
+}
+
+enum BadgeMetric {
+  verified_credentials
+  accepted_items
+  clean_delivery_streak
+  completed_audits
+  confirmed_flags
+  karma_total
+  // Community programs the member has accepted work in that reached
+  // publication status `published`.
+  published_datasets
+  // Percentage of the member's decided flags the platform confirmed.
+  // `threshold` is the percentage; `minSample` is the minimum decided flags
+  // required before the ratio is trustworthy enough to award on.
+  flag_accuracy_pct
+  // Position on the all-time open leaderboard. Compared inverted: a rank at or
+  // below `threshold` qualifies (threshold 10 = "top 10").
+  leaderboard_rank
+  // `threshold` is the minimum accepted items required before a spotless
+  // record counts — a contributor with zero work has not "avoided" anything.
+  zero_abandons
+  // `threshold` is the minimum decided flags required before a spotless
+  // flag record counts.
+  zero_dismissed_flags
+  // Nothing is measured: the badge exists only to be granted by an admin.
+  manual
+}
+
+enum BadgeFamily {
+  build
+  audit
+  platform
+}
+
+enum BadgeIcon {
+  check
+  code
+  shield
+  clock
+  eye
+  award
+  flag
+  sparkles
+  zap
+  users
+  database
+  layers
+  coins
+  beaker
+}
+
+enum SubmissionStatus {
+  draft
+  submitted
+  duplicate_check
+  // DEPRECATED / unused: external-corpus plagiarism screening was removed
+  // from the pipeline entirely per owner decision (services/validation.ts
+  // never transitions a submission to this status). Kept in the enum rather
+  // than dropped — an enum-value drop is a schema migration this cleanup
+  // does not make; no live row currently holds this status.
+  contamination_check
+  running_tests
+  tests_failed
+  llm_validation
+  needs_fixes
+  provisionally_accepted
+  in_audit
+  // Community open-pool with NO validators (auditCoveragePct == 0),
+  // COMMUNITY_OPEN_POOL_PLAN_V2 §3.3c ("Piece 2"): at pool close-out every
+  // item is routed here for the sponsor/requester to approve or reject, in
+  // place of validator review. Sponsor approve -> `accepted`; sponsor reject
+  // -> `needs_fixes` (contributor revises). Held (reserves a pool slot) until
+  // the sponsor decides; nothing publishes until every item is resolved.
+  in_sponsor_review
+  flagged
+  disputed
+  accepted
+  // Community open-pool only (COMMUNITY_OPEN_POOL_PLAN_V2 §3.3): a clean pass
+  // through the automated pipeline lands here instead of `accepted` while the
+  // pool is still open. `schedulePoolSampling` resolves every row in this
+  // status to either `in_audit` (sampled) or `accepted` (not sampled) at pool
+  // close-out. Never a terminal state on its own.
+  accepted_pending_sample
+  rejected
+}
+
+enum ContributorBatchStatus {
+  available
+  claimed
+  submitted
+  needs_fixes
+  partially_accepted
+  accepted
+  abandoned
+}
+
+enum FlagReason {
+  duplicate
+  // DEPRECATED / unused: external-corpus plagiarism screening was removed
+  // from the pipeline entirely per owner decision; no code path creates a
+  // Flag with this reason and no live row currently holds it. Kept in the
+  // enum rather than dropped — an enum-value drop is a schema migration
+  // this cleanup does not make.
+  contaminated
+  tests_invalid
+  solution_incorrect
+  too_trivial
+  low_quality
+  off_spec
+  // Escape hatch for a real problem none of the fixed reasons name. Safe only
+  // because a rejecting decision already requires a written note
+  // (lib/audit-decision-note.ts) — without that, "other" would be a rejection
+  // with no stated cause at all.
+  other
+}
+
+enum FlagStatus {
+  open
+  fixed
+  disputed
+  confirmed
+  dismissed
+}
+
+enum AuditVerdict {
+  ok
+  flagged
+}
+
+enum SponsorExampleReviewStatus {
+  pending
+  approved
+  needs_changes
+  rejected
+}
+
+enum DisputeStatus {
+  open
+  resolved
+}
+
+enum ArtifactKind {
+  sponsor_reference // sponsor creation-time examples: samples, starter files, rubric notes
+  submission_attachment // contributor per-item files, code bundles, fixtures
+  bulk_submission_source // original uploaded JSON/CSV/JSONL source for a batch
+  validation_log // sandbox stdout/stderr, runner traces
+  validation_report // aggregated dedupe/execution/llm report
+  export_bundle // final JSONL/CSV/ZIP + manifest for the sponsor
+  public_sample // limited public marketplace preview
+  benchmark_manifest // frozen public benchmark manifest
+  benchmark_private_split // held-out benchmark inputs/tests; never public
+  benchmark_run_output // bounded per-task evaluator output/evidence
+  publication_bundle // portal-ready archive for an assisted-manual publication target
+}
+
+enum ArtifactVisibility {
+  private // owner + admins only
+  work_brief // readable by contributors/validators working the bounty
+  accepted_delivery // readable by the sponsor after acceptance
+  public_sample // world-readable marketplace preview
+}
+
+enum ArtifactStatus {
+  pending_upload // slot issued, bytes not yet stored
+  scanning // stored, awaiting virus/content scan
+  ready // stored and cleared for read
+  quarantined // failed scan or size/checksum mismatch
+  deleted // soft-deleted
+}
+
+enum BulkParseStatus {
+  not_applicable // artifact kind isn't bulk_submission_source
+  skipped // uploaded as the source of record for items submitted another way — deliberately never ingested
+  pending // ready, job enqueued but not yet started
+  processing // worker has committed at least one chunk
+  done // fully parsed, all rows accounted for
+  failed // job exhausted retries; see bulkParseError
+}
+
+enum ArtifactModality {
+  image
+  video
+  audio
+  document // pdf, docx, etc.
+  archive // zip and friends
+  code
+  text
+  other
+}
+
+enum ArtifactScanStatus {
+  not_required
+  pending
+  clean
+  infected
+  error
+  /// Declared MIME/extension doesn't match the file's actual byte signature
+  /// (magic-byte check, §2.5) — distinct from `infected` (malware scanner
+  /// verdict) so admin evidence doesn't conflate "scanned, found malware"
+  /// with "the declaration itself was dishonest."
+  content_mismatch
+}
+
+enum BenchmarkStatus {
+  draft
+  published
+  archived
+}
+
+enum BenchmarkVersionStatus {
+  draft
+  building
+  validating
+  ready
+  published
+  failed
+  archived
+}
+
+enum BenchmarkTaskSplit {
+  public_sample
+  private_holdout
+}
+
+enum BenchmarkRunStatus {
+  pending
+  running
+  completed
+  failed
+  cancelled
+}
+
+enum BenchmarkTaskResultStatus {
+  pending
+  running
+  passed
+  failed
+  errored
+  skipped
+  cancelled
+}
+
+model User {
+  id                     String     @id @default(cuid())
+  authMethod             AuthMethod @map("auth_method")
+  email                  String?    @unique
+  googleId               String?    @unique @map("google_id")
+  passwordHash           String?    @map("password_hash")
+  displayName            String     @map("display_name")
+  // Canonical lowercase public identifier. Nullable so every pre-launch
+  // account remains valid until its owner explicitly claims a handle.
+  handle                 String?    @unique
+  status                 UserStatus @default(active)
+  onboarded              Boolean    @default(false)
+  // Which dashboard this user prefers to land on: "sponsor" | "contributor" |
+  // "validator" (see lib/persona.ts). A UI preference ONLY — it grants no
+  // capability and no route may gate on it. Nullable because a user may
+  // onboard without choosing, or clear the choice later.
+  persona                String?
+  profilePublic          Boolean    @default(false) @map("profile_public")
+  // Maintained running sum of the member's karma_events.amount, kept in step
+  // by awardKarma / reverseAcceptedSubmissionKarma inside the same transaction
+  // as the event write. Denormalized so the Open-leaderboard rank is an
+  // indexed COUNT over users (WHERE karma_total > $x) instead of a full
+  // GROUP BY aggregate of the whole karma_events table on every profile load.
+  karmaTotal             Int        @default(0) @map("karma_total")
+  // Last OBSERVED Open-leaderboard position, and when it was observed. Written
+  // only by the `leaderboard.rank_check` job (services/leaderboard-movement.ts)
+  // after a karma event changed this member's balance — never computed on a read
+  // path, so a surface can only ever report a position the platform actually
+  // recorded. Null means "not on the leaderboard" (private profile, karma
+  // visibility off, or a zero balance), which is a real answer and must render
+  // as such rather than as rank 0.
+  leaderboardRank        Int?       @map("leaderboard_rank")
+  leaderboardRankAt      DateTime?  @map("leaderboard_rank_at")
+  // The position held BEFORE the most recent improvement, and when that
+  // improvement was recorded. These are what let a surface say "you were #14 on
+  // 14 Aug, you are #11 now" without recomputing history. Only an improvement
+  // writes them: a rank that worsened (someone overtook this member, or their
+  // own award was reversed) updates `leaderboardRank` and deliberately leaves
+  // these alone, because the platform reports gains and never taunts a member
+  // with a loss. `leaderboardRankPrev` is therefore not "the previous value of
+  // leaderboardRank" in general — it is the baseline of the last reported gain.
+  leaderboardRankPrev    Int?       @map("leaderboard_rank_prev")
+  leaderboardRankMovedAt DateTime?  @map("leaderboard_rank_moved_at")
+  // Public-profile field controls. The public endpoint uses an explicit
+  // allowlist and never serializes profile-source/credential data directly.
+  publicProfilePrefs     Json?      @map("public_profile_prefs")
+  // Google accounts are considered verified at creation (Google already
+  // verified the address) — this is only ever null for an email/password
+  // signup that hasn't clicked its verification link yet.
+  emailVerifiedAt        DateTime?  @map("email_verified_at")
+  // Bumped on logout (see routes/v1/auth.ts's /logout) and intended to be
+  // bumped on any future disablement/role-change action, invalidating
+  // anything issued against an earlier value. (Previously also compared by
+  // the cross-service enterprise-assertion bridge, removed 2026-09-03 per
+  // D21 — Enterprise is retired, so that comparison no longer exists.)
+  revocationVersion      Int        @default(0) @map("revocation_version")
+  createdAt              DateTime   @default(now()) @map("created_at")
+  updatedAt              DateTime   @updatedAt @map("updated_at")
+  lastSeenAt             DateTime?  @map("last_seen_at")
+
+  roles                       UserRole[]
+  sessions                    Session[]
+  oauthClientsOwned           OAuthClient[]               @relation("OAuthClientOwner")
+  oauthAuthorizationRequests  OAuthAuthorizationRequest[]
+  oauthAuthorizationCodes     OAuthAuthorizationCode[]
+  oauthAccessTokens           OAuthAccessToken[]
+  oauthRefreshTokens          OAuthRefreshToken[]
+  oauthAuditEvents            OAuthAuditEvent[]
+  passwordResetTokens         PasswordResetToken[]
+  emailVerificationTokens     EmailVerificationToken[]
+  channels                    NotificationChannel[]
+  telegramLink                TelegramLink?
+  watchPref                   WatchPref?
+  profileSources              ProfileSource[]
+  sponsorScope                SponsorScope?
+  apiKeys                     ApiKey[]
+  bounties                    Bounty[]                    @relation("SponsorBounties")
+  batches                     ContributorBatch[]
+  submissions                 Submission[]
+  disputes                    Dispute[]
+  rank                        Rank?
+  waitlistEntries             WaitlistEntry[]
+  notifications               Notification[]
+  datasetTypes                DatasetType[]               @relation("AuthoredTypes")
+  authoredHarnesses           DatasetTypeHarness[]        @relation("AuthoredHarnesses")
+  adminInvitesSent            AdminInvite[]               @relation("AdminInvitesSent")
+  workspaceMemberships        WorkspaceMember[]
+  ownedWorkspaces             Workspace[]                 @relation("OwnedWorkspaces")
+  artifacts                   Artifact[]
+  adminAuditLogs              AdminAuditLog[]
+  datasetRequests             DatasetRequest[]            @relation("DatasetRequestRequester")
+  communityBounties           Bounty[]                    @relation("CommunityBountyRequester")
+  karmaEvents                 KarmaEvent[]
+  pendingKarmaAwards          PendingKarmaAward[]
+  badges                      UserBadge[]                 @relation("BadgeHolder")
+  badgesGranted               UserBadge[]                 @relation("BadgeGrantedBy")
+  benchmarksCreated           Benchmark[]                 @relation("BenchmarkCreatedBy")
+  benchmarkVersionsCreated    BenchmarkVersion[]          @relation("BenchmarkVersionCreatedBy")
+  benchmarkVersionsApproved   BenchmarkVersion[]          @relation("BenchmarkVersionApprovedBy")
+  benchmarkRunsRequested      BenchmarkRun[]              @relation("BenchmarkRunRequestedBy")
+  uploadReviewDrafts          SubmissionUploadDraft[]
+  agentIssuesReported         AgentIssue[]                @relation("AgentIssueReporter")
+  agentIssuesAssigned         AgentIssue[]                @relation("AgentIssueAssignee")
+  datasetPublicationsAttested DatasetPublication[]        @relation("DatasetPublicationPublisher")
+  claimedAuditWindows         HumanAuditWindow[]          @relation("HumanAuditWindowClaimant")
+  auditBatches                AuditBatch[]
+
+  // Open-leaderboard rank: count public, handle-claimed, karma-visible users
+  // with a higher karma_total. This composite covers that predicate + range.
+  @@index([profilePublic, handle, karmaTotal])
+  @@map("users")
+}
+
+model UserRole {
+  userId String @map("user_id")
+  role   Role
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, role])
+  @@map("user_roles")
+}
+
+enum WorkspaceKind {
+  personal
+  team
+}
+
+enum WorkspaceRole {
+  owner
+  admin
+  member
+}
+
+model Workspace {
+  id        String        @id @default(cuid())
+  name      String
+  kind      WorkspaceKind @default(personal)
+  // Deleting the owner deletes the workspace (cascade) — right for personal
+  // workspaces and structurally prevents orphaned rows. When team
+  // workspaces become real, the user-deletion flow must transfer ownership
+  // before removing an owner account, rather than letting the cascade take
+  // the whole team workspace down.
+  ownerId   String        @map("owner_id")
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  owner   User              @relation("OwnedWorkspaces", fields: [ownerId], references: [id], onDelete: Cascade)
+  members WorkspaceMember[]
+
+  @@index([ownerId])
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  workspaceId String        @map("workspace_id")
+  userId      String        @map("user_id")
+  role        WorkspaceRole @default(owner)
+  createdAt   DateTime      @default(now()) @map("created_at")
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([workspaceId, userId])
+  @@index([userId])
+  @@map("workspace_members")
+}
+
+model AdminInvite {
+  id          String    @id @default(cuid())
+  email       String
+  role        Role
+  tokenHash   String    @unique @map("token_hash")
+  invitedById String    @map("invited_by_id")
+  expiresAt   DateTime  @map("expires_at")
+  acceptedAt  DateTime? @map("accepted_at")
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  invitedBy   User      @relation("AdminInvitesSent", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  @@index([email])
+  @@map("admin_invites")
+}
+
+model AuthNonce {
+  id        String    @id @default(cuid())
+  nonce     String    @unique
+  message   String?
+  usedAt    DateTime? @map("used_at")
+  expiresAt DateTime  @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([expiresAt])
+  @@map("auth_nonces")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  userAgent String?  @map("user_agent")
+  ip        String?
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model OAuthClient {
+  id                      String                      @id @default(cuid())
+  clientId                String                      @unique @map("client_id")
+  clientSecretHash        String?                     @map("client_secret_hash")
+  clientName              String?                     @map("client_name")
+  redirectUris            String[]                    @map("redirect_uris")
+  grantTypes              String[]                    @default(["authorization_code", "refresh_token"]) @map("grant_types")
+  tokenEndpointAuthMethod String                      @default("none") @map("token_endpoint_auth_method")
+  ownerUserId             String?                     @map("owner_user_id")
+  createdAt               DateTime                    @default(now()) @map("created_at")
+  updatedAt               DateTime                    @updatedAt @map("updated_at")
+  owner                   User?                       @relation("OAuthClientOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  authorizationRequests   OAuthAuthorizationRequest[]
+  authorizationCodes      OAuthAuthorizationCode[]
+  accessTokens            OAuthAccessToken[]
+  refreshTokens           OAuthRefreshToken[]
+  auditEvents             OAuthAuditEvent[]
+
+  @@index([ownerUserId])
+  @@map("oauth_clients")
+}
+
+model OAuthAuthorizationRequest {
+  id            String      @id @default(cuid())
+  clientId      String      @map("client_id")
+  userId        String?     @map("user_id")
+  redirectUri   String      @map("redirect_uri")
+  scope         String[]
+  state         String?
+  codeChallenge String      @map("code_challenge")
+  resource      String?
+  expiresAt     DateTime    @map("expires_at")
+  approvedAt    DateTime?   @map("approved_at")
+  deniedAt      DateTime?   @map("denied_at")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  client        OAuthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  user          User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([clientId, expiresAt])
+  @@index([userId, expiresAt])
+  @@map("oauth_authorization_requests")
+}
+
+model OAuthAuthorizationCode {
+  id            String              @id @default(cuid())
+  codeHash      String              @unique @map("code_hash")
+  clientId      String              @map("client_id")
+  userId        String              @map("user_id")
+  redirectUri   String              @map("redirect_uri")
+  scope         String[]
+  codeChallenge String              @map("code_challenge")
+  resource      String?
+  expiresAt     DateTime            @map("expires_at")
+  usedAt        DateTime?           @map("used_at")
+  createdAt     DateTime            @default(now()) @map("created_at")
+  client        OAuthClient         @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessTokens  OAuthAccessToken[]
+  refreshTokens OAuthRefreshToken[]
+
+  @@index([clientId, expiresAt])
+  @@map("oauth_authorization_codes")
+}
+
+model OAuthAccessToken {
+  id                  String                  @id @default(cuid())
+  tokenHash           String                  @unique @map("token_hash")
+  clientId            String                  @map("client_id")
+  userId              String                  @map("user_id")
+  scope               String[]
+  resource            String?
+  expiresAt           DateTime                @map("expires_at")
+  revokedAt           DateTime?               @map("revoked_at")
+  createdAt           DateTime                @default(now()) @map("created_at")
+  /// Traces this token back to the authorization code that minted it — null
+  /// for a token issued by refresh (exchangeRefreshToken never has a code)
+  /// and for every token that predates this column. Exists so a REPLAYED
+  /// code (OAuth 2.1 4.1.3 / 7.5.3: a code presented again after it was
+  /// already consumed) can revoke exactly the tokens it produced. `SetNull`
+  /// on the code's deletion, never `Restrict`/`Cascade`: cleanupMcpOAuth's
+  /// sweep must be free to delete the code row once the tokens it names have
+  /// gone their own way, and it must never delete a LIVE access token as a
+  /// side effect of pruning the code that once minted it.
+  authorizationCodeId String?                 @map("authorization_code_id")
+  client              OAuthClient             @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  user                User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  authorizationCode   OAuthAuthorizationCode? @relation(fields: [authorizationCodeId], references: [id], onDelete: SetNull)
+
+  @@index([userId, revokedAt])
+  @@index([clientId, expiresAt])
+  @@index([authorizationCodeId])
+  @@map("oauth_access_tokens")
+}
+
+model OAuthRefreshToken {
+  id                  String                  @id @default(cuid())
+  tokenHash           String                  @unique @map("token_hash")
+  clientId            String                  @map("client_id")
+  userId              String                  @map("user_id")
+  scope               String[]
+  resource            String?
+  expiresAt           DateTime                @map("expires_at")
+  revokedAt           DateTime?               @map("revoked_at")
+  /// Set ONLY when this token was retired by a successful rotation, alongside
+  /// `revokedAt`. Explicit revocation (RFC 7009, dashboard disconnect, account
+  /// suspension) sets `revokedAt` and leaves this null, which is what keeps the
+  /// short reuse grace window in exchangeRefreshToken from ever resurrecting a
+  /// grant the user deliberately killed.
+  rotatedAt           DateTime?               @map("rotated_at")
+  createdAt           DateTime                @default(now()) @map("created_at")
+  /// Same rationale as OAuthAccessToken.authorizationCodeId — see there.
+  authorizationCodeId String?                 @map("authorization_code_id")
+  client              OAuthClient             @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  user                User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  authorizationCode   OAuthAuthorizationCode? @relation(fields: [authorizationCodeId], references: [id], onDelete: SetNull)
+
+  @@index([userId, revokedAt])
+  @@index([clientId, expiresAt])
+  @@index([authorizationCodeId])
+  @@map("oauth_refresh_tokens")
+}
+
+model OAuthAuditEvent {
+  id        String       @id @default(cuid())
+  action    String
+  clientId  String?      @map("client_id")
+  userId    String?      @map("user_id")
+  metadata  Json?
+  ip        String?
+  userAgent String?      @map("user_agent")
+  createdAt DateTime     @default(now()) @map("created_at")
+  client    OAuthClient? @relation(fields: [clientId], references: [clientId], onDelete: SetNull)
+  user      User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([clientId, createdAt])
+  @@index([userId, createdAt])
+  @@map("oauth_audit_events")
+}
+
+enum PasswordTokenPurpose {
+  reset
+  set
+}
+
+model PasswordResetToken {
+  id        String               @id @default(cuid())
+  userId    String               @map("user_id")
+  tokenHash String               @unique @map("token_hash")
+  purpose   PasswordTokenPurpose @default(reset)
+  expiresAt DateTime             @map("expires_at")
+  usedAt    DateTime?            @map("used_at")
+  createdAt DateTime             @default(now()) @map("created_at")
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+model AdminSetting {
+  key       String   @id
+  value     Json
+  updatedBy String?  @map("updated_by")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("admin_settings")
+}
+
+model AdminSettingHistory {
+  id        String   @id @default(cuid())
+  key       String
+  oldValue  Json?    @map("old_value")
+  newValue  Json?    @map("new_value")
+  action    String
+  changedBy String?  @map("changed_by")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([key, createdAt])
+  @@index([changedBy])
+  @@map("admin_settings_history")
+}
+
+model LlmAuditLog {
+  id            String   @id @default(cuid())
+  feature       String
+  provider      String
+  model         String
+  userId        String?  @map("user_id")
+  accountId     String?  @map("account_id")
+  promptHash    String   @map("prompt_hash")
+  promptVersion String   @map("prompt_version")
+  outputHash    String   @map("output_hash")
+  inputTokens   Int      @map("input_tokens")
+  outputTokens  Int      @map("output_tokens")
+  costMicroUsd  BigInt   @map("cost_micro_usd")
+  fallbackUsed  Boolean  @map("fallback_used")
+  failoverUsed  Boolean  @map("failover_used")
+  latencyMs     Int      @map("latency_ms")
+  ok            Boolean
+  error         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([feature, createdAt])
+  @@map("llm_audit_log")
+}
+
+model LlmQuotaReservation {
+  id                   String    @id @default(cuid())
+  idempotencyKey       String    @unique @map("idempotency_key")
+  userId               String?   @map("user_id")
+  reservedCostMicroUsd BigInt    @map("reserved_cost_micro_usd")
+  quotaDay             DateTime? @map("quota_day")
+  quotaShard           Int?      @map("quota_shard")
+  status               String    @default("reserved")
+  expiresAt            DateTime  @map("expires_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  @@index([createdAt, status])
+  @@index([expiresAt])
+  @@index([userId, createdAt, status])
+  // Created by 20260731140000_add_sharded_llm_quota_buckets but never declared
+  // here, which left `prisma migrate diff` permanently non-empty. `map:` pins
+  // the migration's shorter name (it wrote "shard", not "quota_shard") so
+  // declaring it is a no-op against every existing database.
+  @@index([quotaDay, quotaShard, status], map: "llm_quota_reservations_quota_day_shard_status_idx")
+  @@map("llm_quota_reservations")
+}
+
+model LlmQuotaBucket {
+  quotaDay         DateTime @map("quota_day")
+  shard            Int
+  limitMicroUsd    BigInt   @map("limit_micro_usd")
+  reservedMicroUsd BigInt   @default(0) @map("reserved_micro_usd")
+  settledMicroUsd  BigInt   @default(0) @map("settled_micro_usd")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@id([quotaDay, shard])
+  @@map("llm_quota_buckets")
+}
+
+model LlmCache {
+  key       String   @id
+  feature   String
+  value     Json
+  createdAt DateTime @default(now()) @map("created_at")
+  expiresAt DateTime @map("expires_at")
+
+  @@index([expiresAt])
+  @@map("llm_cache")
+}
+
+model LlmRoutingOverride {
+  id          String   @id @default(cuid())
+  feature     String
+  accountId   String?  @map("account_id")
+  modelKey    String?  @map("model_key")
+  maxTokens   Int?     @map("max_tokens")
+  temperature Float?
+  timeoutMs   Int?     @map("timeout_ms")
+  enabled     Boolean?
+  evalId      String?  @map("eval_id")
+  updatedBy   String?  @map("updated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([feature, accountId])
+  @@index([accountId])
+  @@index([evalId])
+  @@map("llm_routing_overrides")
+}
+
+model LlmChangeEvaluation {
+  id              String    @id @default(cuid())
+  feature         String
+  accountId       String?   @map("account_id")
+  target          String // prompt | routing | prompt_and_routing
+  status          String    @default("draft") // draft | eval_passed | canary | approved | rejected
+  configHash      String    @map("config_hash")
+  candidatePrompt String?   @map("candidate_prompt")
+  candidateConfig Json?     @map("candidate_config")
+  sampleCount     Int       @default(0) @map("sample_count")
+  passRate        Float?    @map("pass_rate")
+  regressionRate  Float?    @map("regression_rate")
+  canaryPercent   Int       @default(0) @map("canary_percent")
+  notes           String?
+  createdBy       String?   @map("created_by")
+  approvedBy      String?   @map("approved_by")
+  approvedAt      DateTime? @map("approved_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@index([feature, status])
+  @@index([accountId])
+  @@index([configHash])
+  @@map("llm_change_evaluations")
+}
+
+model NotificationChannel {
+  id                  String      @id @default(cuid())
+  userId              String      @map("user_id")
+  channel             ChannelKind
+  address             String
+  connected           Boolean     @default(false)
+  verified            Boolean     @default(false)
+  deliver             Boolean     @default(false)
+  // Routine digest delivery is independently controllable for every external
+  // channel. It never gates in-app rows or immediate/security/action messages.
+  deliverDigest       Boolean     @default(true) @map("deliver_digest")
+  verifiedAt          DateTime?   @map("verified_at")
+  // Safe, user-visible delivery health. Never store provider response bodies,
+  // webhook URLs, OAuth tokens, or other secrets here.
+  lastError           String?     @map("last_error")
+  lastFailureAt       DateTime?   @map("last_failure_at")
+  lastSuccessAt       DateTime?   @map("last_success_at")
+  // Email ownership challenge: a hashed one-time code sent to `address` on
+  // connect; the channel stays unverified (no delivery) until it's confirmed.
+  verifyCodeHash      String?     @map("verify_code_hash")
+  verifyCodeExpiresAt DateTime?   @map("verify_code_expires_at")
+  createdAt           DateTime    @default(now()) @map("created_at")
+  updatedAt           DateTime    @updatedAt @map("updated_at")
+  user                User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channel])
+  @@map("notification_channels")
+}
+
+model NotificationOAuthState {
+  id        String    @id @default(cuid())
+  provider  String
+  stateHash String    @unique @map("state_hash")
+  userId    String    @map("user_id")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([provider, expiresAt])
+  @@map("notification_oauth_states")
+}
+
+model TelegramLink {
+  id                String    @id @default(cuid())
+  userId            String    @unique @map("user_id")
+  telegramUserId    String?   @map("telegram_user_id")
+  telegramHandle    String?   @map("telegram_handle")
+  status            String    @default("pending")
+  linkCodeExpiresAt DateTime? @map("link_code_expires_at")
+  linkedAt          DateTime? @map("linked_at")
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("telegram_links")
+}
+
+model WatchPref {
+  userId     String   @id @map("user_id")
+  enabled    Boolean  @default(true)
+  // Primary axis: DomainId values (coding/legal/healthcare/finance/science).
+  // Only "coding" has any live DatasetType today — the rest match zero rows
+  // until those domains launch, which is honest (no fabricated matches).
+  domains    String[] @default(["coding"])
+  // Coding-only sub-facets — meaningless (and ignored) outside domains=coding,
+  // since DatasetCategory is the coding template's own taxonomy, not a
+  // cross-domain one. Kept as-is rather than renamed for migration safety.
+  categories String[] // DatasetCategory values
+  languages  String[]
+  updatedAt  DateTime @updatedAt @map("updated_at")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("watch_prefs")
+}
+
+model ProfileSource {
+  id                String                      @id @default(cuid())
+  userId            String                      @map("user_id")
+  source            ProfileSourceKind
+  handleOrUrl       String                      @map("handle_or_url")
+  verified          Boolean                     @default(false)
+  externalId        String?                     @map("external_id")
+  verifiedAt        DateTime?                   @map("verified_at")
+  lastCheckedAt     DateTime?                   @map("last_checked_at")
+  nextCheckAt       DateTime?                   @map("next_check_at")
+  verificationState String                      @default("unverified") @map("verification_state") // unverified | verified | pending_recheck | invalid
+  verifyChallenge   String?                     @map("verify_challenge")
+  verifyLastError   String?                     @map("verify_last_error")
+  accessTokenEnc    String?                     @map("access_token_enc")
+  refreshTokenEnc   String?                     @map("refresh_token_enc")
+  tokenExpiresAt    DateTime?                   @map("token_expires_at")
+  connectedAt       DateTime                    @default(now()) @map("connected_at")
+  user              User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verifications     ProfileSourceVerification[]
+
+  @@unique([userId, source])
+  @@index([verified, nextCheckAt])
+  @@map("profile_sources")
+}
+
+model ProfileSourceVerification {
+  id              String        @id @default(cuid())
+  profileSourceId String        @map("profile_source_id")
+  provider        String
+  checkType       String        @map("check_type")
+  status          String
+  adapterVersion  String        @map("adapter_version")
+  idempotencyKey  String        @unique @map("idempotency_key")
+  errorCode       String?       @map("error_code")
+  evidence        Json?
+  startedAt       DateTime      @default(now()) @map("started_at")
+  completedAt     DateTime?     @map("completed_at")
+  profileSource   ProfileSource @relation(fields: [profileSourceId], references: [id], onDelete: Cascade)
+
+  @@index([profileSourceId, startedAt])
+  @@index([status, startedAt])
+  @@map("profile_source_verifications")
+}
+
+// One connected Slack workspace per user (the "Add to Slack" OAuth install).
+// Deliberately separate from NotificationChannel — that model's own comment
+// says never to store OAuth tokens on it, since it's the general per-channel
+// destination row. This holds the bot token needed to list/post to
+// channels; NotificationChannel.address just holds the chosen channel id
+// once the user picks one from services/slack.ts's channel list.
+model SlackWorkspaceConnection {
+  id          String   @id @default(cuid())
+  userId      String   @unique @map("user_id")
+  teamId      String   @map("team_id")
+  teamName    String   @map("team_name")
+  botUserId   String   @map("bot_user_id")
+  botTokenEnc String   @map("bot_token_enc")
+  connectedAt DateTime @default(now()) @map("connected_at")
+
+  @@map("slack_workspace_connections")
+}
+
+model ExternalProviderCircuit {
+  provider            String    @id
+  consecutiveFailures Int       @default(0) @map("consecutive_failures")
+  openUntil           DateTime? @map("open_until")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  @@map("external_provider_circuits")
+}
+
+model SponsorScope {
+  id             String   @id @default(cuid())
+  userId         String   @unique @map("user_id")
+  // Primary axis, matching WatchPref's domain-first shape — a sponsor can
+  // express interest in any live or coming-soon domain, not just coding.
+  domains        String[] @default(["coding"])
+  // Specific DatasetType ids the sponsor is interested in (catalog-driven).
+  datasetTypeIds String[] @default([]) @map("dataset_type_ids")
+  // Legacy coarse bucket, kept for the planner's category[0] pre-fill path.
+  categories     String[]
+  languages      String[]
+  // Free-text bucket value (matches an admin-configurable
+  // planner.sponsor_scope.volume_options entry) — not an enum, so the top of
+  // the range can grow into the millions without a schema change.
+  volume         String?
+  uses           String[]
+  note           String?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sponsor_scopes")
+}
+
+model ApiKey {
+  id         String        @id @default(cuid())
+  userId     String        @map("user_id")
+  keyPrefix  String        @map("key_prefix")
+  keyHash    String        @unique @map("key_hash")
+  scopes     ApiKeyScope[]
+  createdAt  DateTime      @default(now()) @map("created_at")
+  rotatedAt  DateTime?     @map("rotated_at")
+  lastUsedAt DateTime?     @map("last_used_at")
+  // Nullable max-age policy — settable later without another migration.
+  expiresAt  DateTime?     @map("expires_at")
+  revokedAt  DateTime?     @map("revoked_at")
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+model ApiKeyRateBucket {
+  keyId       String   @map("key_id")
+  windowStart DateTime @map("window_start") @db.Timestamptz(3)
+  count       Int      @default(0)
+
+  @@id([keyId, windowStart])
+  @@index([windowStart])
+  @@map("api_key_rate_buckets")
+}
+
+model AdminAuditLog {
+  id            String   @id @default(cuid())
+  actorUserId   String?  @map("actor_user_id")
+  actorSnapshot Json?    @map("actor_snapshot")
+  action        String
+  targetType    String   @map("target_type")
+  targetId      String   @map("target_id")
+  result        String   @default("success")
+  metadata      Json?
+  before        Json?
+  after         Json?
+  ip            String?
+  userAgent     String?  @map("user_agent")
+  requestId     String?  @map("request_id")
+  prevHash      String?  @map("prev_hash")
+  rowHash       String?  @map("row_hash")
+  createdAt     DateTime @default(now()) @map("created_at")
+  actor         User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId])
+  @@index([targetType, targetId])
+  @@index([action, createdAt])
+  @@index([createdAt])
+  @@map("admin_audit_log")
+}
+
+model AuditChainRepair {
+  id               String   @id @default(cuid())
+  reason           String
+  firstInvalidId   String   @map("first_invalid_id")
+  affectedRows     Int      @map("affected_rows")
+  originalHeadHash String?  @map("original_head_hash")
+  repairedHeadHash String?  @map("repaired_head_hash")
+  manifest         Json
+  repairedAt       DateTime @default(now()) @map("repaired_at")
+
+  @@map("audit_chain_repairs")
+}
+
+model DatasetType {
+  id                 String               @id // slug, e.g. "sql_generation"
+  familyId           String               @default(cuid()) @map("family_id")
+  supersedesId       String?              @unique @map("supersedes_id")
+  version            Int                  @default(1)
+  domain             DomainId
+  name               String
+  description        String
+  status             DatasetTypeStatus
+  origin             DatasetTypeOrigin
+  category           DatasetCategory // nearest legacy category for filters
+  trustTier          TrustTier            @map("trust_tier")
+  fields             Json // TypeField[]
+  verification       Json // { pipeline, executionEnv, dedupeFields, auditOptions }
+  // Optional curated example item(s) shown on the template card, HF-style:
+  // { fields?: Record<key,string>, media?: {key,url,kind,alt?}[], caption? }[].
+  // Nullable and empty by default — a card renders an explicit "no sample yet"
+  // state rather than a placeholder that implies real data. Real, licence-
+  // cleared samples are populated by an admin; never fabricated.
+  sampleAssets       Json?                @map("sample_assets")
+  // Karma pricing axes (KARMA_PRICING_MATRIX_PLAN.md §2). `complexityScore` is
+  // 1–4: what it takes to verify an item of this type is correct, admin-assigned
+  // and domain-neutral. `verificationUnits` counts the fields of this template
+  // that undergo automated, machine-run verification, which buckets into the
+  // verification band. Both are NULLABLE and null means *unpriced* — never a
+  // default: an unpriced type must fail closed rather than quietly price at a
+  // middle score (plan G-9 / OD-6). Seeded for the 33 registry categories from
+  // lib/karma-category-scores.ts; legacy, non-coding, and sponsor fork/custom
+  // types start null and are priced by an admin at review.
+  complexityScore    Int?                 @map("complexity_score")
+  verificationUnits  Int?                 @map("verification_units")
+  // The admin's note from the most recent platform-review decision on a
+  // sponsor-submitted (fork/custom) type — required on a decline so the
+  // sponsor sees why, optional on an approval. Overwritten per decision, not
+  // an audit trail (writeAuditLog already records who/when).
+  reviewNote         String?              @map("review_note")
+  // The sponsor's own request for sandboxed execution verification, written
+  // at fork/custom creation time (sponsor/create planner "fields" step) —
+  // plain-text description of what the harness should check, NEVER
+  // executable code. Purely informational: it is surfaced to an admin
+  // reviewing this type so they can decide whether to author a real harness
+  // via the existing ADMIN-ONLY `admin-harness.ts` flow. Nothing in this
+  // column is ever run — harness authorship stays a security boundary a
+  // sponsor credential cannot reach, unchanged. Null means the sponsor did
+  // not request execution verification for this type.
+  sponsorHarnessNote String?              @map("sponsor_harness_note")
+  difficultyLevels   String[]             @map("difficulty_levels")
+  usageCount         Int                  @default(0) @map("usage_count")
+  // Provenance for a sponsor fork/adapt (plan G13): the platform type this
+  // candidate was cloned + edited from. A fork is a NEW sponsor-authored
+  // candidate in its own family (never a version bump of the source), so this
+  // is a plain reference for the reviewer diff, not the version chain above.
+  forkedFromId       String?              @map("forked_from_id")
+  authorUserId       String?              @map("author_user_id")
+  createdAt          DateTime             @default(now()) @map("created_at")
+  updatedAt          DateTime             @updatedAt @map("updated_at")
+  author             User?                @relation("AuthoredTypes", fields: [authorUserId], references: [id])
+  supersedes         DatasetType?         @relation("DatasetTypeVersionChain", fields: [supersedesId], references: [id], onDelete: Restrict)
+  successor          DatasetType?         @relation("DatasetTypeVersionChain")
+  bounties           Bounty[]
+  datasetRequests    DatasetRequest[]
+  harnesses          DatasetTypeHarness[]
+
+  @@unique([familyId, version])
+  @@index([familyId, status])
+  @@index([status, domain, origin, trustTier, updatedAt])
+  @@map("dataset_types")
+}
+
+enum DatasetTypeHarnessStatus {
+  draft
+  proof_pending
+  verified
+  retired
+}
+
+model DatasetTypeHarness {
+  id               String                   @id @default(cuid())
+  datasetTypeId    String                   @map("dataset_type_id")
+  version          Int                      @default(1)
+  status           DatasetTypeHarnessStatus @default(draft)
+  // The harness.js module source, inlined into the sandbox script with the
+  // same registry/lib/helpers.js + run.js wrappers as a registry harness.
+  source           String
+  sourceSha        String                   @map("source_sha")
+  // Runtimes the harness shells out to (setup.sh's role, as data). Purely
+  // declarative — the proof run is what actually validates them against the
+  // baked sandbox image (a missing one surfaces as runtimeUnavailable).
+  declaredRuntimes String[]                 @map("declared_runtimes")
+  // Immutable proof-run output: per-sample {expected, actual, logsExcerpt,
+  // runtimeUnavailable} plus the sourceSha it proved. Never updated in place.
+  proofEvidence    Json?                    @map("proof_evidence")
+  // The sample set the last proof was requested with: [{payload, expected,
+  // label}]. Kept so the panel can prefill it after a reload — evidence records
+  // each sample's VERDICT but deliberately not its payload, so without this an
+  // admin had to retype every sample to re-prove an edited harness, and the
+  // obvious shortcut (trusting a stale editor buffer) is exactly what the
+  // expected-fail requirement exists to prevent. Written on request, never read
+  // by the proof job (that reads the job payload), so it can never influence a
+  // verdict — it is an editor convenience, not part of the evidence chain.
+  proofSamples     Json?                    @map("proof_samples")
+  proofJobId       String?                  @map("proof_job_id")
+  authorUserId     String?                  @map("author_user_id")
+  reviewNote       String?                  @map("review_note")
+  createdAt        DateTime                 @default(now()) @map("created_at")
+  updatedAt        DateTime                 @updatedAt @map("updated_at")
+  datasetType      DatasetType              @relation(fields: [datasetTypeId], references: [id], onDelete: Cascade)
+  author           User?                    @relation("AuthoredHarnesses", fields: [authorUserId], references: [id])
+
+  @@unique([datasetTypeId, version])
+  @@index([datasetTypeId, status])
+  @@map("dataset_type_harnesses")
+}
+
+model WaitlistEntry {
+  id        String   @id @default(cuid())
+  domain    DomainId
+  userId    String?  @map("user_id")
+  email     String
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([domain])
+  @@map("waitlist_entries")
+}
+
+model Bounty {
+  id                            String                     @id @default(cuid())
+  requesterUserId               String                     @map("requester_user_id")
+  kind                          BountyKind                 @default(community)
+  // Set only for a community bounty minted from an approved request. This is
+  // intentionally separate from requesterUserId, which remains the legacy
+  // ownership relation relied on by supported sponsor routes.
+  communityRequesterUserId      String?                    @map("community_requester_user_id")
+  karmaPerAcceptedItem          Int                        @default(0) @map("karma_per_accepted_item")
+  communityLicense              String?                    @map("community_license")
+  communityLicenseUrl           String?                    @map("community_license_url")
+  publicationStatus             CommunityPublicationStatus @default(not_requested) @map("publication_status")
+  huggingFaceDataset            String?                    @map("hugging_face_dataset")
+  datasetTypeId                 String?                    @map("dataset_type_id")
+  datasetTypeVersion            Int?                       @map("dataset_type_version")
+  // Immutable pricing inputs captured when the bounty is created. Award paths
+  // must use this rather than the live DatasetType/admin matrix so an admin
+  // correction only affects newly minted work.
+  karmaQuote                    Json?                      @map("karma_quote")
+  title                         String
+  description                   String
+  datasetCategory               DatasetCategory            @map("dataset_category")
+  language                      String
+  framework                     String
+  // BigInt (not Int): a bounty's total item target must not overflow the
+  // Int32 ceiling (~2.1B) at billions-of-users scale (scalability plan §2.3).
+  targetItems                   BigInt                     @map("target_items")
+  // Sponsor-provided, scan-approved reference examples are part of the final
+  // target count. Legacy bounties default to zero; planner-created bounties
+  // snapshot the requirement at creation so later config changes cannot alter
+  // an already-priced contract.
+  // New bounties need three approved sponsor reference examples before
+  // support. Existing rows retain their snapshotted requirement; the SQL
+  // migration changes only the database default, never historical contracts.
+  requiredSponsorExamples       Int                        @default(3) @map("required_sponsor_examples")
+  status                        BountyStatus               @default(draft)
+  visibility                    String                     @default("private")
+  auditMode                     AuditMode                  @map("audit_mode")
+  auditCoveragePct              Int                        @map("audit_coverage_pct")
+  // Immutable community-only routing policy captured at mint. NULL preserves
+  // pre-policy pools on their existing sampled/windowed lifecycle.
+  communityValidationMode       String?                    @map("community_validation_mode")
+  // Community-only snapshot of the administrator's rolling human-audit window.
+  // Null is supported/legacy; 0 deliberately preserves community pool-close sampling.
+  humanAuditWindowSize          Int?                       @map("human_audit_window_size")
+  // Community-only immutable snapshot of the administrator's audit-window
+  // failure threshold. A window fails when rejected validator decisions are
+  // greater than or equal to this percentage of its selected review items.
+  // Null remains valid only for supported/legacy rows; new community pools always
+  // snapshot the setting at mint so an administrator cannot alter an in-flight
+  // sponsor contract.
+  humanAuditFailureThresholdPct Int?                       @map("human_audit_failure_threshold_pct")
+  // The single difficulty an open pool is worked at (OD-10 /
+  // KARMA_PRICING_MATRIX_PLAN §3.4). A supported bounty spreads its difficulty mix
+  // across BountySlot + ContributorBatch rows, but an open-pool community bounty
+  // deliberately has NO ContributorBatch — pool-submission.ts creates submissions
+  // with `contributorBatchId: null` — so every pool award read
+  // `submission.batch?.difficulty`, got undefined, and silently priced at the
+  // intermediate rate no matter what mix the requester chose (G-17). Pools are
+  // homogeneous by contract (one contract, one cap), so they carry exactly one
+  // level, resolved from the request's difficulty mix at mint.
+  //
+  // Nullable on purpose, and null is NOT a default difficulty: a supported bounty
+  // never uses this column, and a pool row predating it keeps null. Readers
+  // must fall back explicitly rather than treat null as a middle level.
+  poolDifficulty                String?                    @map("pool_difficulty")
+  holdDays                      Int                        @map("hold_days") // 30 | 365
+  // Hour-precision dispute/karma-hold window for COMMUNITY bounties only.
+  // Snapshotted at mint from the "community.dispute_window_hours" admin
+  // setting (admin-settings.ts). Community bounties are minted with
+  // holdDays: 0 (no supported-style distribution/disbursement hold applies), so this is a
+  // dedicated field rather than overloading holdDays — 14 hours forced into
+  // that Int-days column would round up to a full 24h window. Null on
+  // supported/licensed bounties, which keep using holdDays*days as before.
+  disputeWindowHours            Int?                       @map("dispute_window_hours")
+  // distribution-hold clock — separate from holdDays (which gates disbursement release /
+  // dispute window). Snapshotted at creation from admin settings; set once,
+  // at delivery, never at support. See src/lib/licensing.ts.
+  deadline                      DateTime?
+  revisionNote                  String?                    @map("revision_note")
+  // When the bounty entered `pilot_review` — the clock the 7-day
+  // auto-approve SLA and its day 3/5/7 reminders count from. Cleared when the
+  // sponsor acts (approve/request-changes) or a dispute pauses the clock.
+  // BigInt for the same overflow reason as targetItems above.
+  // INTAKE / close-out counter: accepted + supported + accepted_pending_sample +
+  // in_sponsor_review. Drives pool close-out, pilot completion, and capacity —
+  // it deliberately counts items that only cleared automation (not yet final).
+  // Do NOT surface this as "accepted" to users; use finalAcceptedItems for that.
+  acceptedItems                 BigInt                     @default(0) @map("accepted_items")
+  // TRUE acceptance counter: accepted + supported ONLY — an item a validator passed
+  // (or that has been published). This is the number every user-facing
+  // "accepted" surface must read; `acceptedItems` above over-claims because it
+  // also counts pipeline-passed-but-not-final work. Maintained alongside
+  // acceptedItems in recomputeAcceptedItemCounters so the two can't drift.
+  finalAcceptedItems            BigInt                     @default(0) @map("final_accepted_items")
+  // Community open-pool lifecycle (COMMUNITY_OPEN_POOL_PLAN_V2 §3.3/§8/§9).
+  // All three are null until a community pool reaches targetItems; set once,
+  // in order, never reset — the pool is one-shot (§9). Follows the same
+  // nullable-timestamp-marks-a-state-entry pattern as pilotReviewStartedAt
+  // above rather than a separate enum, since there is no reachable branching
+  // state here (closed -> sampling -> released is a strict linear sequence).
+  poolClosedAt                  DateTime?                  @map("pool_closed_at")
+  poolSamplingStartedAt         DateTime?                  @map("pool_sampling_started_at")
+  poolSamplingCompletedAt       DateTime?                  @map("pool_sampling_completed_at")
+  // Batch-level dispute-and-publish cycle (supersedes the earlier per-item
+  // Bounty.disputeWindowHours gate below for community bounties — that field
+  // is kept as a defensive floor, not the primary gate). UNLIKE the pool
+  // fields immediately above, disputeCycleWindowOpensAt is NOT one-shot: it
+  // is (re)set every time `releaseBucketIfSampleComplete` fires — first when
+  // the pool's sampled/sponsor-reviewed items all settle, and again each
+  // time a dispute-driven revision round (item requeued to `in_audit`, then
+  // redecided) leaves the bounty clean again. The heartbeat sweep
+  // (services/community-publish.ts) only flips disputeCycleSettledAt once
+  // disputeCycleWindowOpensAt + community.dispute_window_hours has elapsed
+  // AND zero `Dispute{status: open}` rows remain for the bounty, then
+  // enqueues publication automatically — no admin action. A fresh dispute
+  // filed after settlement is rejected by the dispute route on window-closed
+  // grounds, same as it always was; there is no explicit "already settled"
+  // check needed because the window math alone already covers it.
+  disputeCycleWindowOpensAt     DateTime?                  @map("dispute_cycle_window_opens_at")
+  disputeCycleSettledAt         DateTime?                  @map("dispute_cycle_settled_at")
+  createdAt                     DateTime                   @default(now()) @map("created_at")
+  updatedAt                     DateTime                   @updatedAt @map("updated_at")
+
+  requester              User                    @relation("SponsorBounties", fields: [requesterUserId], references: [id])
+  communityRequester     User?                   @relation("CommunityBountyRequester", fields: [communityRequesterUserId], references: [id])
+  datasetType            DatasetType?            @relation(fields: [datasetTypeId], references: [id])
+  plan                   BountyPlan?
+  batchPlan              BountyBatchPlan?
+  slots                  BountySlot[]
+  batches                ContributorBatch[]
+  submissions            Submission[]
+  humanAuditWindows      HumanAuditWindow[]
+  auditBatches           AuditBatch[]
+  disputes               Dispute[]
+  artifacts              Artifact[]
+  pendingKarmaAwards     PendingKarmaAward[]
+  sourceRequest          DatasetRequest?         @relation("CommunityRequestBounty")
+  submissionUploadDrafts SubmissionUploadDraft[]
+  publications           DatasetPublication[]
+
+  @@index([requesterUserId])
+  @@index([status])
+  @@index([requesterUserId, status, createdAt])
+  // Public catalog / discovery lists filter on visibility before anything
+  // else (scalability plan §2.3 — missing index).
+  @@index([visibility])
+  @@index([kind, visibility, status, createdAt])
+  // Same repair as HumanAuditWindow above: created by
+  // 20260811123000_add_community_validation_mode, never declared.
+  @@index([kind, communityValidationMode, status], map: "bounties_kind_community_validation_mode_status_idx")
+  /// Trigram index for the `title ILIKE '%q%'` search in the admin, sponsor and
+  /// pool listings. A leading-wildcard LIKE cannot use a btree index at all, so
+  /// without this the search is a sequential scan over `bounties`.
+  ///
+  /// This MUST stay declared here. V1 created the same index in raw SQL
+  /// (20260718014500_add_bounties_title_trgm_index) without declaring it, so
+  /// the next `prisma migrate dev` saw an object the datamodel did not know
+  /// about and auto-emitted `DROP INDEX "bounties_title_trgm_idx"` inside an
+  /// unrelated migration (20260718043145_add_submission_lsh_bands), destroying
+  /// it 2h46m later. Deleting this line re-arms that exact failure.
+  /// Requires pg_trgm, created by 20260907130000_add_bounties_title_trgm_index.
+  @@index([title(ops: raw("gin_trgm_ops"))], type: Gin, map: "bounties_title_trgm_idx")
+  @@map("bounties")
+}
+
+model DatasetPublication {
+  id       String                     @id @default(cuid())
+  bountyId String                     @map("bounty_id")
+  target   PublicationTarget
+  status   CommunityPublicationStatus @default(pending)
+
+  /// Provider-specific dataset reference: a Hugging Face repo id, a GitHub
+  /// `owner/repo`, an AIKosh dataset id. Null until the target resolves one.
+  externalId String? @map("external_id")
+  /// Public URL. Written ONLY from a confirmed provider response (automated
+  /// targets) or an admin-recorded attestation (assisted-manual), never
+  /// derived optimistically from a slug that may not exist yet.
+  url        String?
+
+  /// When this target last completed successfully. Distinct from `updatedAt`,
+  /// which also moves on failures and retries.
+  pushedAt     DateTime? @map("pushed_at")
+  /// Operator-facing reason for the current `failed` / `not_configured` state.
+  lastError    String?   @map("last_error")
+  attemptCount Int       @default(0) @map("attempt_count")
+
+  /// The admin who attested to an `assisted_manual` upload. Non-null ONLY for
+  /// those targets: it is what lets a surface distinguish "a provider confirmed
+  /// this" from "a person said they did this", which are not the same claim.
+  publishedByUserId String? @map("published_by_user_id")
+  /// Artifact holding the prepared portal bundle for an assisted-manual target.
+  bundleArtifactId  String? @map("bundle_artifact_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  bounty         Bounty    @relation(fields: [bountyId], references: [id], onDelete: Cascade)
+  publishedBy    User?     @relation("DatasetPublicationPublisher", fields: [publishedByUserId], references: [id], onDelete: SetNull)
+  bundleArtifact Artifact? @relation("DatasetPublicationBundle", fields: [bundleArtifactId], references: [id], onDelete: SetNull)
+
+  /// One row per bounty per target — the fan-out upserts on this, which is what
+  /// makes a re-queued publish reuse its row instead of stacking duplicates.
+  @@unique([bountyId, target])
+  @@index([status])
+  @@index([target, status])
+  @@map("dataset_publications")
+}
+
+model HumanAuditWindow {
+  id                    String                       @id @default(cuid())
+  bountyId              String                       @map("bounty_id")
+  windowIndex           Int                          @map("window_index")
+  eligibleCount         Int                          @map("eligible_count")
+  quota                 Int
+  carryNumerator        Int                          @default(0) @map("carry_numerator")
+  closureReason         String                       @map("closure_reason")
+  selectionVersion      String                       @default("hmac-sha256-v1") @map("selection_version")
+  closedAt              DateTime                     @default(now()) @map("closed_at")
+  // A window is settled exactly once after every selected validator decision
+  // is durable. `failedAt` records an all-window rejection; a null value after
+  // settlement means only individually flagged submissions were excluded.
+  settledAt             DateTime?                    @map("settled_at")
+  failedAt              DateTime?                    @map("failed_at")
+  rejectedSelectedCount Int?                         @map("rejected_selected_count")
+  // A corrective backfill never deletes a completed selection. It records why
+  // this window no longer governs routing, then allows its items to enter a
+  // later, policy-compliant window.
+  supersededAt          DateTime?                    @map("superseded_at")
+  supersededReason      String?                      @map("superseded_reason")
+  // Per-validator claim (owner requirement: "the validator claims a batch,
+  // 50–100, adjustable from admin"). All three nullable/additive — a window
+  // with `claimedByUserId: null` is unclaimed/available, exactly like every
+  // pre-existing row after this migration. Mirrors v1's
+  // AuditBatch.validatorUserId/claimedAt/deadline (routes/v1/audits.ts:410-550)
+  // onto this schema's window model. `onDelete: SetNull` rather than Cascade:
+  // a deleted user must not delete audit-window history, only vacate the claim.
+  claimedByUserId       String?                      @map("claimed_by_user_id")
+  claimedAt             DateTime?                    @map("claimed_at")
+  // 24h claim-to-decision SLA, stamped at claim time (services/audit-lifecycle.ts
+  // reaper scans this).
+  claimExpiresAt        DateTime?                    @map("claim_expires_at")
+  // The claimable batch this window's selected items belong to, 1:1.
+  //
+  // The window is the SAMPLING record (eligible/quota/HMAC selection) and,
+  // in this deployment, also the claimable unit — `community.human_audit_window_size`
+  // is documented as "the batch a validator claims. 50-100 (owner requirement)"
+  // and pool-lifecycle already packs selected items into chunks of that size.
+  // So a batch is created per chunk rather than pooled independently: two
+  // batching layers with different sizes (windows of 50, v1's audit batches of
+  // 25) would each claim to be "the unit a validator claims".
+  //
+  // Nullable because every window created before this alignment has no batch,
+  // and because a window with zero selected items needs none.
+  auditBatchId          String?                      @unique @map("audit_batch_id")
+  auditBatch            AuditBatch?                  @relation(fields: [auditBatchId], references: [id], onDelete: SetNull)
+  bounty                Bounty                       @relation(fields: [bountyId], references: [id], onDelete: Cascade)
+  claimedBy             User?                        @relation("HumanAuditWindowClaimant", fields: [claimedByUserId], references: [id], onDelete: SetNull)
+  memberships           HumanAuditWindowMembership[]
+
+  @@unique([bountyId, windowIndex])
+  @@index([bountyId, closedAt])
+  @@index([bountyId, supersededAt])
+  // Created by 20260811100000_add_community_audit_window_quality_policy but
+  // never declared here, so `migrate diff` reported permanent drift on every
+  // environment. Pinned with an explicit map to the name that migration
+  // already created — declaring it without the map would make Prisma want to
+  // drop and recreate a live index for a naming difference alone.
+  @@index([bountyId, settledAt], map: "human_audit_windows_bounty_id_settled_at_idx")
+  // Reaper scan: overdue open claims.
+  @@index([claimExpiresAt])
+  // "My open audits" / capacity checks.
+  @@index([claimedByUserId, settledAt])
+  @@map("human_audit_windows")
+}
+
+model HumanAuditWindowMembership {
+  id           String           @id @default(cuid())
+  windowId     String           @map("window_id")
+  submissionId String           @map("submission_id")
+  selected     Boolean          @default(false)
+  rank         String
+  window       HumanAuditWindow @relation(fields: [windowId], references: [id], onDelete: Cascade)
+  submission   Submission       @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@unique([windowId, submissionId])
+  @@unique([windowId, rank])
+  @@index([submissionId])
+  @@map("human_audit_window_memberships")
+}
+
+model DatasetRequest {
+  id               String               @id @default(cuid())
+  requesterUserId  String               @map("requester_user_id")
+  title            String
+  description      String
+  datasetTypeId    String?              @map("dataset_type_id")
+  domain           DomainId?
+  proposedLicense  String               @map("proposed_license")
+  // Scope the requester specifies up front so an admin has everything needed
+  // to accept and mint without a follow-up conversation. Nullable because
+  // requests filed before the planner collected them still have to load; the
+  // API requires all of them on every new request.
+  language         String?
+  framework        String?
+  targetItems      Int?                 @map("target_items")
+  // One of the planner's difficulty presets (mostly_beginner | balanced |
+  // mostly_advanced) — spread across the dataset type's own difficulty levels
+  // at mint time by deriveSlots(), same as a supported bounty.
+  difficultyMix    String?              @map("difficulty_mix")
+  auditCoveragePct Int?                 @map("audit_coverage_pct")
+  idempotencyKey   String               @map("idempotency_key")
+  status           DatasetRequestStatus @default(submitted)
+  adminNote        String?              @map("admin_note")
+  // Uncapped review loop (plan G1): count of times the requester resubmitted
+  // after a changes_requested. Not a hard cap — anti-abuse is rate-limiting.
+  resubmitCount    Int                  @default(0) @map("resubmit_count")
+  reviewedBy       String?              @map("reviewed_by")
+  reviewedAt       DateTime?            @map("reviewed_at")
+  mintedBountyId   String?              @unique @map("minted_bounty_id")
+  createdAt        DateTime             @default(now()) @map("created_at")
+  updatedAt        DateTime             @updatedAt @map("updated_at")
+
+  artifacts    Artifact[]
+  requester    User                    @relation("DatasetRequestRequester", fields: [requesterUserId], references: [id], onDelete: Cascade)
+  datasetType  DatasetType?            @relation(fields: [datasetTypeId], references: [id])
+  mintedBounty Bounty?                 @relation("CommunityRequestBounty", fields: [mintedBountyId], references: [id])
+  comments     DatasetRequestComment[]
+
+  @@unique([requesterUserId, idempotencyKey])
+  @@index([status, createdAt])
+  @@index([requesterUserId, createdAt])
+  @@map("dataset_requests")
+}
+
+model DatasetRequestComment {
+  id           String   @id @default(cuid())
+  requestId    String   @map("request_id")
+  authorUserId String   @map("author_user_id")
+  authorRole   String   @map("author_role")
+  body         String
+  internalOnly Boolean  @default(false) @map("internal_only")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  request DatasetRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId, createdAt])
+  @@map("dataset_request_comments")
+}
+
+enum AgentIssueStatus {
+  received
+  triaged
+  investigating
+  needs_info
+  duplicate
+  not_reproducible
+  resolved
+  rejected
+}
+
+enum AgentIssueCategory {
+  contract
+  validation
+  mcp
+  upload_processing
+  data_quality
+  security_privacy
+  abuse
+  other
+}
+
+enum AgentIssueImpact {
+  blocked
+  degraded
+  suggestion
+}
+
+enum AgentIssueSeverity {
+  low
+  medium
+  high
+  critical
+}
+
+model AgentIssue {
+  id String @id @default(cuid())
+
+  // Nullable so an erased account tombstones its cases instead of cascading
+  // them away: the case body and timeline survive for operational history,
+  // the human behind it does not. `reporterLabel` keeps a non-identifying
+  // stand-in ("agent-4f3c") for a queue that would otherwise show a blank.
+  reporterUserId String? @map("reporter_user_id")
+  reporterLabel  String  @map("reporter_label")
+  // How the report arrived — "mcp_oauth" | "api_key" | "session". Stored as
+  // text (not the ApiKeyScope/credential enums) because it is descriptive
+  // provenance, not an authorization input.
+  source         String
+  // Opaque credential id when one was presented. Never the key, never a hash
+  // that could be replayed — only enough to correlate a misbehaving agent.
+  credentialRef  String? @map("credential_ref")
+  clientName     String? @map("client_name")
+  toolName       String? @map("tool_name")
+  requestId      String? @map("request_id")
+
+  category AgentIssueCategory
+  impact   AgentIssueImpact
+  severity AgentIssueSeverity?
+  status   AgentIssueStatus    @default(received)
+
+  summary    String
+  expected   String
+  actual     String
+  steps      String?
+  // Caller-supplied excerpt AFTER RedactionPolicy. Bounded in the service; the
+  // raw value is never persisted, indexed, fingerprinted, or notified.
+  logExcerpt String? @map("log_excerpt")
+
+  // Server-collected, allowlisted projection of the resources the caller named
+  // AND is authorized to see (ids/status/version/error code only — never
+  // artifact bytes or item contents). Snapshot, not a live permission grant.
+  context           Json?
+  // "complete" | "partial" | "pending" | "unavailable". Written ONLY from
+  // `contextCollectionFor()` (services/issues.ts), which reserves "complete"
+  // for "every named resource resolved AND authorized".
+  //
+  // The default is "unavailable" and must stay that way. It used to be
+  // "complete", which meant a row inserted without an explicit value — i.e.
+  // every case, since nothing wrote the column — claimed a full context
+  // snapshot that had never been taken, and the web rendered a green
+  // "Context attached" pill directly above "No resources were named on this
+  // case." A default that asserts a check passed is the exact failure mode the
+  // trust-honesty invariant forbids; "unavailable" is the honest floor.
+  contextCollection String  @default("unavailable") @map("context_collection")
+  redactionApplied  Boolean @default(false) @map("redaction_applied")
+
+  // Deterministic dedupe candidate key (category + resource tuple + summary
+  // hash). ADVISORY ONLY — suggestions for staff. Nothing auto-merges or
+  // auto-closes on a fingerprint match.
+  fingerprint String
+
+  canonicalIssueId String? @map("canonical_issue_id")
+  assignedToUserId String? @map("assigned_to_user_id")
+
+  resolutionNote String?   @map("resolution_note")
+  // Free-text deploy/PR/bug reference for now; a typed integration is a
+  // deliberate later decision, not an implied one.
+  resolutionRef  String?   @map("resolution_ref")
+  resolvedAt     DateTime? @map("resolved_at")
+
+  // Optimistic concurrency for every staff command. Two admins on one detail
+  // page must not last-write-wins each other's disposition.
+  version        Int    @default(1)
+  idempotencyKey String @map("idempotency_key")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  reporter   User?             @relation("AgentIssueReporter", fields: [reporterUserId], references: [id], onDelete: SetNull)
+  assignedTo User?             @relation("AgentIssueAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  canonical  AgentIssue?       @relation("AgentIssueDuplicates", fields: [canonicalIssueId], references: [id])
+  duplicates AgentIssue[]      @relation("AgentIssueDuplicates")
+  events     AgentIssueEvent[]
+
+  @@unique([reporterUserId, idempotencyKey])
+  @@index([status, createdAt])
+  @@index([reporterUserId, createdAt])
+  @@index([fingerprint, createdAt])
+  @@index([canonicalIssueId])
+  @@index([assignedToUserId, status])
+  @@map("agent_issues")
+}
+
+model AgentIssueEvent {
+  id      String @id @default(cuid())
+  issueId String @map("issue_id")
+
+  // No FK on the actor on purpose (same choice as DatasetRequestComment):
+  // history must outlive the account, and a SetNull here would erase who acted.
+  actorUserId  String? @map("actor_user_id")
+  actorRole    String  @map("actor_role")
+  // created | reporter_reply | status_changed | assigned | info_requested |
+  // merged | unmerged | resolved | note | job_health | enriched | escalated
+  // (`enriched` and `escalated` are written by workers and are internalOnly:
+  // an enrichment result and an aging alert are facts about staff's queue, not
+  // news for the reporter.)
+  type         String
+  body         String?
+  internalOnly Boolean @default(false) @map("internal_only")
+  metadata     Json?
+  requestId    String? @map("request_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  issue AgentIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@index([issueId, createdAt])
+  @@map("agent_issue_events")
+}
+
+model KarmaEvent {
+  id         String         @id @default(cuid())
+  userId     String         @map("user_id")
+  eventType  KarmaEventType @map("event_type")
+  amount     Int
+  sourceType String         @map("source_type")
+  sourceId   String         @map("source_id")
+  metadata   Json?
+  createdAt  DateTime       @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, eventType, sourceType, sourceId])
+  @@index([userId, createdAt])
+  @@index([sourceType, sourceId])
+  @@map("karma_events")
+}
+
+model PendingKarmaAward {
+  id             String         @id @default(cuid())
+  bountyId       String         @map("bounty_id")
+  userId         String         @map("user_id")
+  eventType      KarmaEventType @map("event_type")
+  amount         Int
+  sourceType     String         @map("source_type")
+  sourceId       String         @map("source_id")
+  metadata       Json?
+  createdAt      DateTime       @default(now()) @map("created_at")
+  releasedAt     DateTime?      @map("released_at")
+  // Set when the underlying acceptance is undone (upheld dispute, terminal
+  // rejection) before publication ever released it. A row can be released
+  // XOR reversed, never both — awardPublicationKarma must skip any row with
+  // this set, the same way it always skipped an already-released one.
+  reversedAt     DateTime?      @map("reversed_at")
+  reversedReason String?        @map("reversed_reason")
+
+  bounty Bounty @relation(fields: [bountyId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, eventType, sourceType, sourceId])
+  @@index([bountyId, releasedAt])
+  @@map("pending_karma_awards")
+}
+
+model Badge {
+  id          String      @id @default(cuid())
+  // Stable identifier the frontends key off. Immutable once created so that
+  // renaming a badge's label never orphans awards or icon handling.
+  key         String      @unique
+  family      BadgeFamily
+  label       String
+  // Human-readable statement of what earns it. Shown verbatim to members.
+  criteria    String
+  icon        BadgeIcon
+  metric      BadgeMetric
+  threshold   Int         @default(1)
+  // Minimum sample size before a ratio-based metric may award, so a member
+  // with 1-for-1 confirmed flags does not earn a "95% accuracy" badge.
+  minSample   Int         @default(0) @map("min_sample")
+  // False for `manual` badges: the console grants them explicitly.
+  autoGranted Boolean     @default(true) @map("auto_granted")
+  // Deactivated badges stop being awarded and disappear from the member
+  // dashboard, but existing awards are retained for history.
+  active      Boolean     @default(true)
+  sortOrder   Int         @default(0) @map("sort_order")
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  awards UserBadge[]
+
+  @@index([active, family, sortOrder])
+  @@map("badges")
+}
+
+model UserBadge {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  badgeId         String   @map("badge_id")
+  earnedAt        DateTime @default(now()) @map("earned_at")
+  // Set only for manually granted badges; null means the evaluator awarded it.
+  grantedByUserId String?  @map("granted_by_user_id")
+  // The measured value at the moment of the award, kept as evidence so the
+  // dashboard can render "214 accepted items" without recomputing history.
+  measuredValue   Int?     @map("measured_value")
+
+  user      User  @relation("BadgeHolder", fields: [userId], references: [id], onDelete: Cascade)
+  badge     Badge @relation(fields: [badgeId], references: [id], onDelete: Cascade)
+  grantedBy User? @relation("BadgeGrantedBy", fields: [grantedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, badgeId])
+  @@index([badgeId])
+  @@map("user_badges")
+}
+
+model BountyPlan {
+  id        String   @id @default(cuid())
+  bountyId  String   @unique @map("bounty_id")
+  planJson  Json     @map("plan_json")
+  createdAt DateTime @default(now()) @map("created_at")
+  bounty    Bounty   @relation(fields: [bountyId], references: [id], onDelete: Cascade)
+
+  @@map("bounty_plans")
+}
+
+model PlannerSession {
+  id            String   @id @default(cuid())
+  userId        String   @map("user_id")
+  answersJson   Json     @map("answers_json")
+  transcript    Json
+  completed     Boolean  @default(false)
+  createdBounty String?  @map("created_bounty")
+  // Optimistic-concurrency token. Bumped on every autosave; a client that
+  // sends a stale `expectedVersion` (e.g. a second tab editing the same draft)
+  // gets a 409 instead of silently clobbering the other tab's work (F9).
+  version       Int      @default(0)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  artifacts Artifact[]
+
+  @@index([userId])
+  @@map("planner_sessions")
+}
+
+model BountySlot {
+  id         String            @id @default(cuid())
+  bountyId   String            @map("bounty_id")
+  name       String
+  difficulty String
+  itemCount  Int               @map("item_count")
+  filled     Int               @default(0)
+  createdAt  DateTime          @default(now()) @map("created_at")
+  bounty     Bounty            @relation(fields: [bountyId], references: [id], onDelete: Cascade)
+  workShards BountyWorkShard[]
+
+  @@index([bountyId])
+  @@map("bounty_slots")
+}
+
+model BountyBatchPlan {
+  id                     String   @id @default(cuid())
+  bountyId               String   @unique @map("bounty_id")
+  policyVersion          Int      @map("policy_version")
+  itemTarget             Int      @map("item_target")
+  shardItems             Int      @map("shard_items")
+  openBatchWindow        Int      @map("open_batch_window")
+  totalBatchCount        Int      @map("total_batch_count")
+  materializedBatchCount Int      @default(0) @map("materialized_batch_count")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  bounty     Bounty             @relation(fields: [bountyId], references: [id], onDelete: Cascade)
+  workShards BountyWorkShard[]
+  batches    ContributorBatch[]
+
+  @@index([materializedBatchCount])
+  @@map("bounty_batch_plans")
+}
+
+model BountyWorkShard {
+  id                     String   @id @default(cuid())
+  batchPlanId            String   @map("batch_plan_id")
+  slotId                 String   @map("slot_id")
+  ordinal                Int
+  batchOrdinalStart      Int      @map("batch_ordinal_start")
+  itemCount              Int      @map("item_count")
+  batchCount             Int      @map("batch_count")
+  materializedBatchCount Int      @default(0) @map("materialized_batch_count")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  batchPlan BountyBatchPlan    @relation(fields: [batchPlanId], references: [id], onDelete: Cascade)
+  slot      BountySlot         @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  batches   ContributorBatch[]
+
+  @@unique([batchPlanId, ordinal])
+  @@index([batchPlanId, materializedBatchCount])
+  @@map("bounty_work_shards")
+}
+
+model ContributorBatch {
+  id                String                 @id @default(cuid())
+  bountyId          String                 @map("bounty_id")
+  slotId            String?                @map("slot_id")
+  batchPlanId       String?                @map("batch_plan_id")
+  workShardId       String?                @map("work_shard_id")
+  ordinalInShard    Int?                   @map("ordinal_in_shard")
+  contributorUserId String?                @map("contributor_user_id")
+  slotName          String                 @map("slot_name")
+  category          DatasetCategory
+  difficulty        String
+  // BigInt: same Int32-overflow reasoning as Bounty.targetItems (§2.3).
+  itemCount         BigInt                 @map("item_count")
+  submittedCount    Int                    @default(0) @map("submitted_count")
+  status            ContributorBatchStatus @default(available)
+  deadline          DateTime?
+  claimedAt         DateTime?              @map("claimed_at")
+  createdAt         DateTime               @default(now()) @map("created_at")
+
+  bounty             Bounty                  @relation(fields: [bountyId], references: [id], onDelete: Cascade, map: "creator_batches_bounty_id_fkey")
+  batchPlan          BountyBatchPlan?        @relation(fields: [batchPlanId], references: [id], onDelete: SetNull, map: "creator_batches_batch_plan_id_fkey")
+  workShard          BountyWorkShard?        @relation(fields: [workShardId], references: [id], onDelete: SetNull, map: "creator_batches_work_shard_id_fkey")
+  contributor        User?                   @relation(fields: [contributorUserId], references: [id], map: "creator_batches_creator_user_id_fkey")
+  submissions        Submission[]
+  uploadReviewDrafts SubmissionUploadDraft[]
+
+  @@unique([workShardId, ordinalInShard], map: "creator_batches_work_shard_id_ordinal_in_shard_key")
+  @@index([bountyId], map: "creator_batches_bounty_id_idx")
+  @@index([status], map: "creator_batches_status_idx")
+  @@index([contributorUserId], map: "creator_batches_creator_user_id_idx")
+  @@index([contributorUserId, status], map: "creator_batches_creator_user_id_status_idx")
+  @@index([contributorUserId, status, claimedAt], map: "creator_batches_creator_user_id_status_claimed_at_idx")
+  @@index([status, deadline])
+  @@index([batchPlanId, status], map: "creator_batches_batch_plan_id_status_idx")
+  @@map("contributor_batches")
+}
+
+model Submission {
+  id                      String           @id @default(cuid())
+  bountyId                String           @map("bounty_id")
+  slotId                  String?          @map("slot_id")
+  contributorBatchId      String?          @map("contributor_batch_id")
+  contributorUserId       String           @map("contributor_user_id")
+  title                   String
+  payloadJson             Json             @map("payload_json")
+  generationMethod        GenerationMethod @map("generation_method")
+  status                  SubmissionStatus @default(submitted)
+  duplicateScore          Float?           @map("duplicate_score")
+  // Which layered-dedupe tier produced duplicateScore, and the decision it
+  // led to. Mirrors ValidationResult's "dedupe" stage detailJson so the
+  // authoritative outcome is also queryable directly off the submission row.
+  duplicateMethod         String?          @map("duplicate_method")
+  duplicateOfSubmissionId String?          @map("duplicate_of_submission_id")
+  duplicateDecision       String?          @map("duplicate_decision")
+  // DEPRECATED / unused: external-corpus plagiarism screening was removed
+  // from the pipeline entirely per owner decision (services/validation.ts
+  // never writes a non-null value here; verified zero non-null rows in the
+  // dev database). Column kept rather than dropped — dropping it is a
+  // separate, riskier schema migration this cleanup does not make.
+  contaminationScore      Float?           @map("contamination_score")
+  llmScore                Float?           @map("llm_score")
+  revisionCount           Int              @default(0) @map("revision_count")
+  validationAttempt       Int              @default(0) @map("validation_attempt")
+  acceptedAt              DateTime?        @map("accepted_at")
+  // Community open-pool only (COMMUNITY_OPEN_POOL_PLAN_V2 §3.3b): the item
+  // tripped a forced-escalation branch during automated validation (near-dup
+  // review, execution pending, AI-attribution flag, LLM
+  // not-reviewed or uncertain) while the pool was still filling. Instead of
+  // routing to a validator immediately (supported-flow behavior), community pools
+  // HOLD it in `accepted_pending_sample` and set this flag, so pool close-out
+  // can give it GUARANTEED human review (never subject to the random
+  // auditCoveragePct draw). Preserves the Trust-or-Escalate invariant while
+  // keeping "nothing to a human until the pool is full".
+  pendingHumanReview      Boolean          @default(false) @map("pending_human_review")
+  // Canonical dedupe key computed at write time (same normalizer as the
+  // app-level pre-check). A partial unique index on
+  // (bounty_id, contributor_batch_id-or-empty, dedupe_key) WHERE dedupe_key IS
+  // NOT NULL AND status <> 'rejected' is added via raw SQL in the migration
+  // — Prisma has no partial/expression-unique-index syntax. This is the
+  // actual race-free guard:
+  // the existingKeys/incomingKeys check in the route only prevents duplicates
+  // within a single request, not across two concurrent requests. A P2002 on
+  // create/update here means a concurrent request won the race; the caller
+  // marks that item rejected as a real duplicate instead of crashing.
+  dedupeKey               String?          @map("dedupe_key")
+  createdAt               DateTime         @default(now()) @map("created_at")
+  updatedAt               DateTime         @updatedAt @map("updated_at")
+
+  bounty                      Bounty                       @relation(fields: [bountyId], references: [id], onDelete: Cascade)
+  batch                       ContributorBatch?            @relation(fields: [contributorBatchId], references: [id], map: "submissions_creator_batch_id_fkey")
+  contributor                 User                         @relation(fields: [contributorUserId], references: [id], map: "submissions_creator_user_id_fkey")
+  validationResults           ValidationResult[]
+  flags                       Flag[]
+  artifacts                   Artifact[]
+  revisions                   SubmissionRevision[]
+  lshBands                    SubmissionLshBand[]
+  benchmarkTasks              BenchmarkTask[]
+  humanAuditWindowMemberships HumanAuditWindowMembership[]
+  auditItems                  AuditItem[]
+
+  @@index([bountyId])
+  @@index([contributorUserId], map: "submissions_creator_user_id_idx")
+  @@index([status])
+  // getProfileSummary counts a member's accepted/supported submissions on every
+  // dashboard/profile load; this composite turns that COUNT into an
+  // index-only scan instead of scanning all of the user's submissions.
+  @@index([contributorUserId, status], map: "submissions_creator_user_id_status_idx")
+  @@index([contributorUserId, contributorBatchId, createdAt], map: "submissions_creator_user_id_creator_batch_id_created_at_idx")
+  // The composite above leads on contributorUserId, so it cannot serve a bare
+  // `where: { contributorBatchId }`. This index was originally added to serve
+  // a per-batch scan the validation pipeline ran on every validation job for
+  // the (now-removed, per owner decision) external-corpus plagiarism stage;
+  // kept here as a plain `contributorBatchId` lookup index for any other
+  // batch-scoped query, rather than dropped along with that stage.
+  @@index([contributorBatchId], map: "submissions_creator_batch_id_idx")
+  // Intake dedupe probes `bountyId + dedupeKey IN (...)` for the keys of the
+  // rows being inserted. The partial unique index leads on
+  // (bounty_id, COALESCE(contributor_batch_id,'')), so dedupe_key is not
+  // reachable as a prefix there and the probe degraded to a per-bounty scan.
+  @@index([bountyId, dedupeKey])
+  // Per-bounty submission lists order/filter by recency (scalability plan
+  // §2.3 — both were missing; sponsor evidence view and admin aggregates
+  // scan on these).
+  @@index([bountyId, createdAt])
+  @@index([createdAt])
+  // Pool admission (`reservedItems` COUNT WHERE bountyId + status IN (...)) and
+  // the pool-lifecycle counters ran WHERE (bountyId, status) with only the
+  // single-column bountyId/status indexes — so an open pool's capacity check
+  // read every row for that bounty on every submit (O(pool size), under the
+  // per-bounty FOR UPDATE lock). This composite makes it an index range scan.
+  @@index([bountyId, status], map: "submissions_bounty_id_status_idx")
+  @@map("submissions")
+}
+
+model SubmissionLshBand {
+  id           String     @id @default(cuid())
+  submissionId String     @map("submission_id")
+  bandIndex    Int        @map("band_index")
+  bandHash     String     @map("band_hash")
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, bandIndex])
+  @@index([bandIndex, bandHash])
+  @@map("submission_lsh_bands")
+}
+
+model SubmissionRevision {
+  id                 String           @id @default(cuid())
+  submissionId       String           @map("submission_id")
+  revisionNumber     Int              @map("revision_number")
+  title              String
+  payloadJson        Json             @map("payload_json")
+  generationMethod   GenerationMethod @map("generation_method")
+  status             SubmissionStatus
+  duplicateScore     Float?           @map("duplicate_score")
+  // DEPRECATED / unused — see the matching comment on Submission.contaminationScore.
+  contaminationScore Float?           @map("contamination_score")
+  llmScore           Float?           @map("llm_score")
+  validationEvidence Json             @map("validation_evidence")
+  createdAt          DateTime         @default(now()) @map("created_at")
+  submission         Submission       @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  benchmarkTasks     BenchmarkTask[]
+
+  @@unique([submissionId, revisionNumber])
+  @@index([submissionId, createdAt])
+  @@map("submission_revisions")
+}
+
+model ValidationResult {
+  id                String     @id @default(cuid())
+  submissionId      String     @map("submission_id")
+  // Validation evidence is append-only. A retry/recheck shares the
+  // submission revision but gets a new attempt number, so it can never erase
+  // the prior runner/LLM evidence.
+  validationAttempt Int        @default(0) @map("validation_attempt")
+  stage             String // dedupe | ai_attribution | execution | llm | pool_capacity | human_audit
+  // `contamination` appears only on legacy rows: external-corpus plagiarism screening was removed from the pipeline
+  // entirely per owner decision and no code path writes this stage value anymore. (Likewise "contamination_check",
+  // which is a SubmissionStatus enum member rather than a stage value — nothing writes it as a stage either.)
+  passed            Boolean
+  score             Float?
+  detailJson        Json?      @map("detail_json") // runner logs, matched neighbours, rubric
+  // Denormalized, INDEXABLE facets of an execution run, pulled out of
+  // detailJson so the admin console can aggregate them (E2B-style health view):
+  // which provider ran it, the coarse outcome, how long it took, and whether
+  // isolation was confirmed. All nullable — populated only for `stage=execution`
+  // and left NULL for other stages and for legacy rows a backfill couldn't map.
+  provider          String?    @map("provider") // e2b | ec2
+  outcome           String?    @map("outcome") // runner_completed | runtime_unavailable | all_providers_failed | no_provider_configured | no_executable_harness | not_attempted | execution_held_for_review | ...
+  durationMs        Int?       @map("duration_ms")
+  isolationVerified Boolean?   @map("isolation_verified")
+  createdAt         DateTime   @default(now()) @map("created_at")
+  submission        Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  artifacts         Artifact[]
+
+  @@index([submissionId, validationAttempt, createdAt])
+  @@index([stage, passed])
+  // Window scans for the execution-health aggregation.
+  @@index([stage, createdAt])
+  @@map("validation_results")
+}
+
+model Flag {
+  id              String     @id @default(cuid())
+  submissionId    String     @map("submission_id")
+  validatorUserId String?    @map("validator_user_id")
+  reason          FlagReason
+  details         String?
+  status          FlagStatus @default(open)
+  createdAt       DateTime   @default(now()) @map("created_at")
+  submission      Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@index([validatorUserId, status])
+  @@map("flags")
+}
+
+model Dispute {
+  id                  String        @id @default(cuid())
+  bountyId            String?       @map("bounty_id")
+  submissionId        String?       @map("submission_id")
+  raisedByUserId      String?       @map("raised_by_user_id")
+  bountyTitle         String        @map("bounty_title")
+  submissionTitle     String        @map("submission_title")
+  flagReason          FlagReason    @map("flag_reason")
+  contributorArgument String        @map("contributor_argument")
+  validatorArgument   String        @map("validator_argument")
+  status              DisputeStatus @default(open)
+  resolution          String?
+  resolutionDecision  String?       @map("resolution_decision")
+  resolvedByUserId    String?       @map("resolved_by_user_id")
+  createdAt           DateTime      @default(now()) @map("created_at")
+  resolvedAt          DateTime?     @map("resolved_at")
+
+  bounty   Bounty? @relation(fields: [bountyId], references: [id])
+  raisedBy User?   @relation(fields: [raisedByUserId], references: [id])
+
+  @@index([status])
+  @@index([resolvedByUserId])
+  @@map("disputes")
+}
+
+model Rank {
+  userId                                String   @id @map("user_id")
+  contributorRank                       String?  @map("contributor_rank")
+  validatorRank                         String?  @map("validator_rank")
+  acceptedItems                         Int      @default(0) @map("accepted_items")
+  auditsCompleted                       Int      @default(0) @map("audits_completed")
+  // Punctuality standing (contributor side): drives reliability
+  // Contributor punctuality drives reliability pricing. The validator
+  // deadline counter is deliberately separate so role activity cannot
+  // cross-contaminate either identity's standing.
+  contributorMissedDeadlines            Int      @default(0) @map("contributor_missed_deadlines")
+  contributorAbandons                   Int      @default(0) @map("contributor_abandons")
+  contributorConsecutiveCleanDeliveries Int      @default(0) @map("contributor_consecutive_clean_deliveries")
+  validatorMissedDeadlines              Int      @default(0) @map("validator_missed_deadlines")
+  updatedAt                             DateTime @updatedAt @map("updated_at")
+  user                                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("ranks")
+}
+
+model Notification {
+  id           String                 @id @default(cuid())
+  userId       String                 @map("user_id")
+  type         String
+  title        String
+  body         String
+  status       NotificationStatus     @default(pending)
+  eventKey     String                 @map("event_key")
+  entityType   String?                @map("entity_type")
+  entityId     String?                @map("entity_id")
+  /// Bounty id for building an audience-specific deep link when entityId
+  /// points at a batch/audit rather than the bounty itself (see
+  /// notificationHref in services/notifications.ts).
+  linkBountyId String?                @map("link_bounty_id")
+  /// Structured render payload for notifications whose content is a
+  /// COLLECTION rather than one event — today only `digest.summary`, which
+  /// stores a `DigestPayload` (see services/notifications/digest.ts) so the
+  /// email adapter can render per-section counts and one link per line instead
+  /// of a flat string. Null for every ordinary event, whose title/body already
+  /// say everything. Never holds secrets: it is rendered into outbound mail.
+  data         Json?
+  read         Boolean                @default(false)
+  createdAt    DateTime               @default(now()) @map("created_at")
+  updatedAt    DateTime               @updatedAt @map("updated_at")
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries   NotificationDelivery[]
+
+  @@unique([userId, eventKey])
+  @@index([userId, read, createdAt])
+  @@index([status, createdAt])
+  @@map("notifications")
+}
+
+model NotificationDelivery {
+  id             String                     @id @default(cuid())
+  notificationId String                     @map("notification_id")
+  channel        ChannelKind
+  address        String
+  status         NotificationDeliveryStatus @default(pending)
+  attempts       Int                        @default(0)
+  sentAt         DateTime?                  @map("sent_at")
+  nextAttemptAt  DateTime?                  @map("next_attempt_at")
+  lastError      String?                    @map("last_error")
+  createdAt      DateTime                   @default(now()) @map("created_at")
+  updatedAt      DateTime                   @updatedAt @map("updated_at")
+  notification   Notification               @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, channel])
+  @@index([status, nextAttemptAt])
+  @@map("notification_deliveries")
+}
+
+model JobQueue {
+  id             String    @id @default(cuid())
+  type           String
+  idempotencyKey String    @unique @map("idempotency_key")
+  payload        Json
+  status         JobStatus @default(pending)
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(5) @map("max_attempts")
+  nextAttemptAt  DateTime? @map("next_attempt_at")
+  lastError      String?   @map("last_error")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  // Multi-tenant fairness partition key for dbJobQueue.claim(): the claim is
+  // one atomic FOR UPDATE SKIP LOCKED statement and cannot join out per job
+  // type to discover a job's owner, so the tenant travels on the row.
+  //
+  // Nullable on purpose — several job types have no single owning tenant
+  // (artifact.purge_expired_uploads, notifications.fanout_watchers,
+  // waitlist.notify_domain_live); claim() gives those their own explicit
+  // shared "system" bucket rather than letting them dominate or starve.
+  //
+  // Deliberately NOT a relation/foreign key: this is an opaque partition key,
+  // not a relationship. A queued job must still drain or dead-letter after
+  // its tenant is deleted, and enqueue must never fail or block on workspace
+  // provisioning (personal workspaces are fire-and-forget in lib/workspace.ts).
+  // Values use that layer's deterministic `ws_<userId>` id, so they line up
+  // with real Workspace rows wherever those exist.
+  workspaceId String? @map("workspace_id")
+
+  // Real execution timing, used to compute the completion estimates the API
+  // hands back to callers (services/job-eta.ts → check_submission,
+  // get_file_status, and both submit responses).
+  //
+  // These exist because the honest alternative was arithmetic on
+  // `updatedAt - createdAt`, which measures queue wait PLUS execution and so
+  // systematically overstates how long the work itself takes — the more
+  // backlogged the queue, the more wrong the estimate, which is exactly when
+  // an accurate one matters. `startedAt` is stamped by claim() on the first
+  // attempt only (a retry must not erase when the job first ran), `finishedAt`
+  // by ack()/fail() on reaching a terminal state. Nullable throughout: rows
+  // predating this column, and jobs still queued, legitimately have neither.
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+
+  @@index([type, status, nextAttemptAt])
+  @@index([status, nextAttemptAt])
+  @@index([type, workspaceId, createdAt])
+  // Serves the ETA sampler: "recent completed runs of this type", newest
+  // first. Without it, estimating a duration means scanning every finished
+  // job of every type.
+  @@index([type, finishedAt])
+  @@map("job_queue")
+}
+
+model Artifact {
+  id                  String                      @id @default(cuid())
+  kind                ArtifactKind
+  visibility          ArtifactVisibility          @default(private)
+  status              ArtifactStatus              @default(pending_upload)
+  scanStatus          ArtifactScanStatus          @default(not_required) @map("scan_status")
+  sponsorReviewStatus SponsorExampleReviewStatus? @map("sponsor_review_status")
+  sponsorReviewNote   String?                     @map("sponsor_review_note")
+  sponsorReviewedAt   DateTime?                   @map("sponsor_reviewed_at")
+  sponsorReviewedBy   String?                     @map("sponsor_reviewed_by")
+
+  // Ownership / tenancy. Every read authz is workspace + role + entity scope,
+  // never trusting the client-supplied filename or key.
+  workspaceId        String? @map("workspace_id")
+  ownerUserId        String? @map("owner_user_id")
+  bountyId           String? @map("bounty_id")
+  // Pre-mint owners for sponsor reference samples. A community sample is
+  // authored while the sponsor is still walking the planner, long before any
+  // DatasetRequest row (created on submit) or Bounty row (created on admin
+  // mint) exists — so the draft itself has to own it, or a sponsor who leaves
+  // mid-flow and resumes later loses their samples.
+  //
+  // INVARIANT: exactly ONE of plannerSessionId / datasetRequestId / bountyId is
+  // set on a sponsor_reference at any time. Carry-forward clears the previous
+  // pointer as it sets the next (planner session -> request -> bounty), which is
+  // what makes the Cascade rules below safe: a cascade can only ever reach a
+  // sample still owned by the stage being deleted.
+  plannerSessionId   String? @map("planner_session_id")
+  datasetRequestId   String? @map("dataset_request_id")
+  submissionId       String? @map("submission_id")
+  contributorBatchId String? @map("contributor_batch_id")
+  validationResultId String? @map("validation_result_id")
+
+  // Display + integrity metadata. filename is display-only, never used to
+  // build the storage key (blocks path traversal).
+  filename          String
+  contentType       String  @map("content_type")
+  declaredSizeBytes BigInt? @map("declared_size_bytes")
+  sizeBytes         BigInt? @map("size_bytes")
+  checksumSha256    String? @map("checksum_sha256")
+
+  // Storage location. Driver is an adapter id; key is server-generated only.
+  storageDriver String  @default("local") @map("storage_driver")
+  storageBucket String? @map("storage_bucket")
+  storageKey    String  @map("storage_key")
+
+  uploadExpiresAt     DateTime? @map("upload_expires_at")
+  // Set only while a large-object (multipart) direct upload is in flight. The
+  // provider multipart upload id is required to complete or abort the upload;
+  // cleared on completion. A non-null value on an expired pending row tells the
+  // cleanup worker to abort the provider-side multipart upload so orphaned
+  // parts stop incurring storage cost.
+  multipartUploadId   String?   @map("multipart_upload_id")
+  versionOfArtifactId String?   @map("version_of_artifact_id")
+
+  // Resumable bulk-source ingest progress (bulk_submission_source only).
+  // Cursor is a row/line index into the parsed source — a crashed or retried
+  // job re-reads the file but skips everything at or before the cursor, so a
+  // multi-million-row source never restarts a chunk it already committed.
+  bulkParseStatus      BulkParseStatus @default(not_applicable) @map("bulk_parse_status")
+  bulkParseCursor      Int             @default(0) @map("bulk_parse_cursor")
+  bulkParseRowCount    Int?            @map("bulk_parse_row_count")
+  bulkParseCreated     Int             @default(0) @map("bulk_parse_created")
+  /// Rows the parser read but could not use (not JSON, not an object). Counted
+  /// rather than silently dropped: without it a source whose rows mostly failed
+  /// reported `done` and looked like a clean full ingest.
+  bulkParseSkippedRows Int             @default(0) @map("bulk_parse_skipped_rows")
+  bulkParseError       String?         @map("bulk_parse_error")
+
+  // Format-registry dimension (FORMAT_REGISTRY_AND_MULTIMODAL_PIPELINE_PLAN.md
+  // Phase 1). modality is backfilled from contentType; required going forward.
+  modality         ArtifactModality? // backfilled from contentType
+  detectedMimeType String?           @map("detected_mime_type") // persists detectFileKind()'s result, not just pass/fail
+  parserVersion    String?           @map("parser_version") // handler.version at last successful parse; null = never parsed
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  purgedAt  DateTime? @map("purged_at")
+
+  owner                     User?                    @relation(fields: [ownerUserId], references: [id])
+  bounty                    Bounty?                  @relation(fields: [bountyId], references: [id], onDelete: Cascade)
+  // Cascade, not SetNull: a discarded draft or cancelled request must not leave
+  // a sample row pointing at nothing. Storage objects are a separate concern —
+  // the discard/cancel routes soft-delete and enqueue a storage purge BEFORE
+  // deleting the parent, so cascade is only the backstop against dangling rows.
+  plannerSession            PlannerSession?          @relation(fields: [plannerSessionId], references: [id], onDelete: Cascade)
+  datasetRequest            DatasetRequest?          @relation(fields: [datasetRequestId], references: [id], onDelete: Cascade)
+  submission                Submission?              @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  validationResult          ValidationResult?        @relation(fields: [validationResultId], references: [id], onDelete: Cascade)
+  versionOf                 Artifact?                @relation("ArtifactVersions", fields: [versionOfArtifactId], references: [id])
+  uploadReviewDraft         SubmissionUploadDraft?
+  versions                  Artifact[]               @relation("ArtifactVersions")
+  publicBenchmarkManifests  BenchmarkVersion[]       @relation("BenchmarkVersionPublicManifest")
+  privateBenchmarkManifests BenchmarkVersion[]       @relation("BenchmarkVersionPrivateManifest")
+  benchmarkRunOutputs       BenchmarkRunTaskResult[] @relation("BenchmarkRunTaskResultOutput")
+  datasetPublicationBundles DatasetPublication[]     @relation("DatasetPublicationBundle")
+
+  @@index([bountyId, kind])
+  @@index([plannerSessionId, kind])
+  @@index([datasetRequestId, kind])
+  @@index([submissionId])
+  @@index([ownerUserId])
+  @@index([status])
+  @@map("artifacts")
+}
+
+model SubmissionUploadDraft {
+  id                     String           @id @default(cuid())
+  ownerUserId            String           @map("owner_user_id")
+  targetKind             String           @map("target_kind") // claimed_batch | community_pool
+  bountyId               String?          @map("bounty_id")
+  contributorBatchId     String?          @map("contributor_batch_id")
+  generationMethod       GenerationMethod @map("generation_method")
+  expectedItemCount      Int?             @map("expected_item_count")
+  sourceDescription      String?          @map("source_description")
+  // Set only by the authenticated draft contributor as an explicit, one-draft
+  // authorization. The browser may submit only a clean parsed source after
+  // this timestamp; no authority carries over to another draft.
+  autoSubmitAuthorizedAt DateTime?        @map("auto_submit_authorized_at")
+  tokenHash              String           @unique @map("token_hash")
+  // Second, longer-lived capability minted when the one-time handoff link is
+  // redeemed, so the review page works WITHOUT a dashboard session. Stored as
+  // an HMAC like tokenHash — never plaintext. Null until redemption; it dies
+  // with draftExpiresAt, and cancel/submit clear it so a leaked value cannot
+  // be replayed against a finished draft.
+  accessTokenHash        String?          @unique @map("access_token_hash")
+  tokenExpiresAt         DateTime         @map("token_expires_at")
+  draftExpiresAt         DateTime         @map("draft_expires_at")
+  redeemedAt             DateTime?        @map("redeemed_at")
+  revokedAt              DateTime?        @map("revoked_at")
+  sourceArtifactId       String?          @unique @map("source_artifact_id")
+  status                 String           @default("awaiting_upload")
+  previewSummary         Json?            @map("preview_summary")
+  submittedAt            DateTime?        @map("submitted_at")
+  // Resume cursor for the `upload_draft.submit` background job — the last
+  // `SubmissionUploadDraftItem.rowNumber` this draft has fully committed a
+  // Submission (or a skip) for. Row-insert and cursor-advance always happen
+  // in the SAME transaction (see services/jobs/upload-draft-submit.ts), so
+  // this value and the set of items with `submissionId` set are always
+  // consistent even after a crash mid-run.
+  submitCursorRowNumber  Int?             @map("submit_cursor_row_number")
+  // Honest stop/failure reason for the last submit run (e.g. "pool_full",
+  // "pool_closed"), surfaced to the reviewer. Null on a clean full ingest.
+  submitError            String?          @map("submit_error")
+  createdAt              DateTime         @default(now()) @map("created_at")
+  updatedAt              DateTime         @updatedAt @map("updated_at")
+
+  owner            User                        @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  bounty           Bounty?                     @relation(fields: [bountyId], references: [id], onDelete: Cascade)
+  contributorBatch ContributorBatch?           @relation(fields: [contributorBatchId], references: [id], onDelete: Cascade, map: "submission_upload_drafts_creator_batch_id_fkey")
+  sourceArtifact   Artifact?                   @relation(fields: [sourceArtifactId], references: [id], onDelete: SetNull)
+  items            SubmissionUploadDraftItem[]
+
+  @@index([ownerUserId, status])
+  @@index([tokenExpiresAt])
+  @@index([draftExpiresAt])
+  @@index([bountyId])
+  @@index([contributorBatchId], map: "submission_upload_drafts_creator_batch_id_idx")
+  @@map("submission_upload_drafts")
+}
+
+model SubmissionUploadDraftItem {
+  id           String   @id @default(cuid())
+  draftId      String   @map("draft_id")
+  rowNumber    Int      @map("row_number")
+  payload      Json?
+  errorCode    String?  @map("error_code")
+  errorMessage String?  @map("error_message")
+  // Set once this row has become a real Submission (see
+  // services/jobs/upload-draft-submit.ts). Per-row idempotency marker: a row
+  // with this set must never be submitted again, even on job retry.
+  submissionId String?  @map("submission_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  draft SubmissionUploadDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  @@unique([draftId, rowNumber])
+  @@index([draftId, errorCode])
+  @@index([draftId, submissionId])
+  @@map("submission_upload_draft_items")
+}
+
+model ArtifactProcessingEvent {
+  id             String   @id @default(cuid())
+  artifactId     String   @map("artifact_id")
+  stage          String // "parse" | "preview" | "similarity_check" | ...
+  status         String // "passed" | "failed" | "not_supported" | "pending" | "stale"
+  handlerVersion String   @map("handler_version")
+  detail         Json
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([artifactId])
+  @@map("artifact_processing_events")
+}
+
+model BenchmarkCorpus {
+  id        String          @id @default(cuid())
+  name      String // e.g. "coding"
+  version   Int             @default(1)
+  source    String // e.g. "HumanEval+MBPP+SWE-bench"
+  active    Boolean         @default(false) // exactly one active corpus is screened against
+  itemCount Int             @default(0) @map("item_count")
+  createdAt DateTime        @default(now()) @map("created_at")
+  items     BenchmarkItem[]
+
+  @@unique([name, version])
+  @@map("benchmark_corpora")
+}
+
+model BenchmarkItem {
+  id            String          @id @default(cuid())
+  corpusId      String          @map("corpus_id")
+  // Canonical SHA-256 of the identity fields (same normalizer as dedup).
+  canonicalHash String          @map("canonical_hash")
+  // k=5 token shingles for MinHash/Jaccard near-match.
+  shingles      String[]
+  label         String? // e.g. "HumanEval/12"
+  corpus        BenchmarkCorpus @relation(fields: [corpusId], references: [id], onDelete: Cascade)
+
+  @@index([corpusId])
+  @@index([canonicalHash])
+  @@map("benchmark_items")
+}
+
+model Benchmark {
+  id                 String          @id @default(cuid())
+  slug               String          @unique
+  title              String
+  description        String?
+  status             BenchmarkStatus @default(draft)
+  supportedDomains   DomainId[]      @map("supported_domains")
+  supportedLanguages String[]        @default([]) @map("supported_languages")
+  createdByUserId    String          @map("created_by_user_id")
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
+  archivedAt         DateTime?       @map("archived_at")
+
+  createdBy User               @relation("BenchmarkCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  versions  BenchmarkVersion[]
+
+  @@index([status, createdAt])
+  @@map("benchmarks")
+}
+
+model BenchmarkVersion {
+  id                        String                 @id @default(cuid())
+  benchmarkId               String                 @map("benchmark_id")
+  version                   Int
+  status                    BenchmarkVersionStatus @default(draft)
+  // All evaluation-affecting contract settings (scoring, runtime/image,
+  // limits, corpus identifiers) are frozen at release creation time.
+  contract                  Json
+  sourceManifest            Json                   @map("source_manifest")
+  sourceManifestSha256      String                 @map("source_manifest_sha256")
+  publicManifestArtifactId  String?                @unique @map("public_manifest_artifact_id")
+  privateManifestArtifactId String?                @unique @map("private_manifest_artifact_id")
+  privateManifestSha256     String?                @map("private_manifest_sha256")
+  taskCount                 Int                    @default(0) @map("task_count")
+  publicTaskCount           Int                    @default(0) @map("public_task_count")
+  privateTaskCount          Int                    @default(0) @map("private_task_count")
+  createdByUserId           String                 @map("created_by_user_id")
+  approvedByUserId          String?                @map("approved_by_user_id")
+  createdAt                 DateTime               @default(now()) @map("created_at")
+  frozenAt                  DateTime?              @map("frozen_at")
+  validatedAt               DateTime?              @map("validated_at")
+  publishedAt               DateTime?              @map("published_at")
+  failedAt                  DateTime?              @map("failed_at")
+  failureEvidence           Json?                  @map("failure_evidence")
+
+  benchmark               Benchmark       @relation(fields: [benchmarkId], references: [id], onDelete: Restrict)
+  createdBy               User            @relation("BenchmarkVersionCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  approvedBy              User?           @relation("BenchmarkVersionApprovedBy", fields: [approvedByUserId], references: [id], onDelete: Restrict)
+  publicManifestArtifact  Artifact?       @relation("BenchmarkVersionPublicManifest", fields: [publicManifestArtifactId], references: [id], onDelete: Restrict)
+  privateManifestArtifact Artifact?       @relation("BenchmarkVersionPrivateManifest", fields: [privateManifestArtifactId], references: [id], onDelete: Restrict)
+  tasks                   BenchmarkTask[]
+  runs                    BenchmarkRun[]
+
+  @@unique([benchmarkId, version])
+  @@index([benchmarkId, status, version])
+  @@index([status, createdAt])
+  @@map("benchmark_versions")
+}
+
+model BenchmarkTask {
+  id                         String             @id @default(cuid())
+  benchmarkVersionId         String             @map("benchmark_version_id")
+  sourceSubmissionId         String             @map("source_submission_id")
+  // A release must pin a concrete immutable submission revision, never a
+  // mutable live Submission row. Phase 2 creates that snapshot if necessary.
+  sourceSubmissionRevisionId String             @map("source_submission_revision_id")
+  split                      BenchmarkTaskSplit
+  ordinal                    Int
+  taskKey                    String             @map("task_key")
+  sourcePayloadSha256        String             @map("source_payload_sha256")
+  publicMetadata             Json?              @map("public_metadata")
+  privateEvidence            Json?              @map("private_evidence")
+  provenanceEvidence         Json               @map("provenance_evidence")
+  createdAt                  DateTime           @default(now()) @map("created_at")
+
+  benchmarkVersion BenchmarkVersion         @relation(fields: [benchmarkVersionId], references: [id], onDelete: Restrict)
+  sourceSubmission Submission               @relation(fields: [sourceSubmissionId], references: [id], onDelete: Restrict)
+  sourceRevision   SubmissionRevision       @relation(fields: [sourceSubmissionRevisionId], references: [id], onDelete: Restrict)
+  runResults       BenchmarkRunTaskResult[]
+
+  @@unique([benchmarkVersionId, taskKey])
+  @@unique([benchmarkVersionId, ordinal])
+  @@index([benchmarkVersionId, split, ordinal])
+  @@index([sourceSubmissionId])
+  @@index([sourceSubmissionRevisionId])
+  @@map("benchmark_tasks")
+}
+
+model BenchmarkRun {
+  id                 String             @id @default(cuid())
+  benchmarkVersionId String             @map("benchmark_version_id")
+  status             BenchmarkRunStatus @default(pending)
+  idempotencyKey     String             @unique @map("idempotency_key")
+  modelProvider      String             @map("model_provider")
+  modelName          String             @map("model_name")
+  modelVersion       String?            @map("model_version")
+  modelConfig        Json               @map("model_config")
+  evaluatorImage     String             @map("evaluator_image")
+  scoringProfile     Json               @map("scoring_profile")
+  requestedByUserId  String?            @map("requested_by_user_id")
+  startedAt          DateTime?          @map("started_at")
+  completedAt        DateTime?          @map("completed_at")
+  cancelledAt        DateTime?          @map("cancelled_at")
+  score              Float?
+  passedTaskCount    Int                @default(0) @map("passed_task_count")
+  evaluatedTaskCount Int                @default(0) @map("evaluated_task_count")
+  evidence           Json? // aggregate, immutable outcome evidence
+  failureEvidence    Json?              @map("failure_evidence")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  benchmarkVersion BenchmarkVersion         @relation(fields: [benchmarkVersionId], references: [id], onDelete: Restrict)
+  requestedBy      User?                    @relation("BenchmarkRunRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
+  taskResults      BenchmarkRunTaskResult[]
+
+  @@index([benchmarkVersionId, status, createdAt])
+  @@index([status, createdAt])
+  @@index([modelProvider, modelName, createdAt])
+  @@map("benchmark_runs")
+}
+
+model BenchmarkRunTaskResult {
+  id               String                    @id @default(cuid())
+  benchmarkRunId   String                    @map("benchmark_run_id")
+  benchmarkTaskId  String                    @map("benchmark_task_id")
+  status           BenchmarkTaskResultStatus @default(pending)
+  passed           Boolean?
+  score            Float?
+  durationMs       Int?                      @map("duration_ms")
+  outputArtifactId String?                   @unique @map("output_artifact_id")
+  evidence         Json // sandbox/image/test-run evidence, no secret inputs
+  errorSummary     String?                   @map("error_summary")
+  startedAt        DateTime?                 @map("started_at")
+  completedAt      DateTime?                 @map("completed_at")
+  createdAt        DateTime                  @default(now()) @map("created_at")
+
+  benchmarkRun   BenchmarkRun  @relation(fields: [benchmarkRunId], references: [id], onDelete: Restrict)
+  benchmarkTask  BenchmarkTask @relation(fields: [benchmarkTaskId], references: [id], onDelete: Restrict)
+  outputArtifact Artifact?     @relation("BenchmarkRunTaskResultOutput", fields: [outputArtifactId], references: [id], onDelete: Restrict)
+
+  @@unique([benchmarkRunId, benchmarkTaskId])
+  @@index([benchmarkTaskId])
+  @@index([status, createdAt])
+  @@map("benchmark_run_task_results")
+}
+
+model WaitlistSignup {
+  id         String    @id @default(cuid())
+  domain     DomainId
+  email      String
+  createdAt  DateTime  @default(now()) @map("created_at")
+  // Set once the "your domain is live" email actually sends. Null means
+  // still pending — the real, checkable evidence behind the landing page's
+  // "we'll notify you the moment it opens" promise (see waitlist-notify.ts),
+  // not just a row nobody ever reads again.
+  notifiedAt DateTime? @map("notified_at")
+
+  // Same email joining the same domain's waitlist twice is a no-op, not a
+  // second row — the count shown publicly must reflect real distinct
+  // signups, not double-submits.
+  @@unique([domain, email])
+  @@index([domain])
+  // Drives the "who's still owed their launch email" scan in
+  // processWaitlistNotifyJobs — partial index so it stays tiny (only
+  // unnotified rows) instead of scanning every historical signup.
+  @@index([domain, notifiedAt])
+  @@map("waitlist_signups")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Operational telemetry — worker heartbeats, deduped system alerts, the
+// organization-owned alert destinations they route to, and the precomputed
+// admin quality snapshot.
+//
+// Ported from v1 (`prisma/schema.prisma:3245-3390`) to close a real parity
+// gap: this schema previously had none of these models, so
+// `routes/v1/admin-health.ts` returned permanently-empty `workers` and
+// `activeAlerts` lists, and `services/admin-quality-metrics.ts` recomputed
+// rolling-7-day aggregates on every request because there was no snapshot row
+// to read. Both were honest about being empty rather than fabricating green
+// rows — but empty is still empty.
+//
+// Community deviation from v1, deliberate: v1's watchdog also alerts on a
+// Redis cache circuit breaker. This API has no cache client at all (searched:
+// no redis import anywhere), so that check is not ported and the health
+// endpoint keeps reporting `driver: "not_configured"` for cache rather than
+// inventing a breaker that cannot open.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum SystemAlertSeverity {
+  info
+  warning
+  critical
+}
+
+enum SystemAlertStatus {
+  active
+  resolved
+}
+
+/// Delivery lifecycle for an organization-owned operational alert. Deliberately
+/// separate from a user's NotificationDelivery: the company alert channel must
+/// survive a staff member being removed or changing roles.
+enum OperationalAlertDeliveryStatus {
+  pending
+  processing
+  sent
+  failed
+  dead
+}
+
+model WorkerHeartbeat {
+  name       String   @id
+  lastRunAt  DateTime @map("last_run_at")
+  /// Last tick error message, cleared on the next successful tick.
+  lastError  String?  @map("last_error")
+  /// The loop's configured cadence, so staleness can be judged per-worker
+  /// (a 10min leaderboard sweep isn't stale after 5 minutes; a 15s
+  /// dispatcher is).
+  intervalMs Int      @map("interval_ms")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("worker_heartbeats")
+}
+
+/// Deduped system-alert state: a persisting condition fires ONE admin
+/// notification when it first activates (or re-activates after resolving, or
+/// escalates in severity) and is auto-resolved with a recovery note when the
+/// watchdog sees the condition clear. Also feeds the admin health panel.
+model SystemAlert {
+  id                    String                     @id @default(cuid())
+  code                  String // e.g. "job_backlog", "job_dead_letter", "worker_stale"
+  dedupeKey             String                     @unique @map("dedupe_key")
+  severity              SystemAlertSeverity
+  status                SystemAlertStatus          @default(active)
+  context               Json
+  firstSeenAt           DateTime                   @default(now()) @map("first_seen_at")
+  lastSeenAt            DateTime                   @default(now()) @map("last_seen_at")
+  resolvedAt            DateTime?                  @map("resolved_at")
+  operationalDeliveries OperationalAlertDelivery[]
+
+  @@index([status, lastSeenAt])
+  @@map("system_alerts")
+}
+
+/// A shared, admin-owned operational destination (for example the company
+/// alert mailbox, a Slack operations channel, or a Telegram alert group).
+/// `addressCiphertext` is always encrypted at rest; it is never sent to the
+/// browser or written to audit metadata. Individual NotificationChannel rows
+/// remain personal preferences and are intentionally not reused here.
+model OperationalAlertDestination {
+  id                String                     @id @default(cuid())
+  name              String
+  channel           ChannelKind
+  addressCiphertext String                     @map("address_ciphertext")
+  verified          Boolean                    @default(false)
+  verifiedAt        DateTime?                  @map("verified_at")
+  enabled           Boolean                    @default(false)
+  minimumSeverity   SystemAlertSeverity        @default(warning) @map("minimum_severity")
+  lastError         String?                    @map("last_error")
+  lastSuccessAt     DateTime?                  @map("last_success_at")
+  createdBy         String                     @map("created_by")
+  createdAt         DateTime                   @default(now()) @map("created_at")
+  updatedAt         DateTime                   @updatedAt @map("updated_at")
+  routes            OperationalAlertRoute[]
+  deliveries        OperationalAlertDelivery[]
+
+  @@index([enabled, minimumSeverity])
+  @@map("operational_alert_destinations")
+}
+
+/// Per-destination routing policy. `alertCode` is either "*" (all system
+/// alerts) or an exact SystemAlert.code such as "worker_stale". This avoids
+/// nullable-unique semantics and gives every routing decision a stable key.
+model OperationalAlertRoute {
+  id              String                      @id @default(cuid())
+  destinationId   String                      @map("destination_id")
+  alertCode       String                      @default("*") @map("alert_code")
+  minimumSeverity SystemAlertSeverity         @default(warning) @map("minimum_severity")
+  enabled         Boolean                     @default(true)
+  createdAt       DateTime                    @default(now()) @map("created_at")
+  updatedAt       DateTime                    @updatedAt @map("updated_at")
+  destination     OperationalAlertDestination @relation(fields: [destinationId], references: [id], onDelete: Cascade)
+
+  @@unique([destinationId, alertCode])
+  @@index([alertCode, enabled])
+  @@map("operational_alert_routes")
+}
+
+/// Durable operational-alert outbox. One row is created per alert transition
+/// and destination; it is safe to retry and provides provider-specific
+/// delivery evidence without exposing the encrypted endpoint.
+model OperationalAlertDelivery {
+  id            String                         @id @default(cuid())
+  alertId       String                         @map("alert_id")
+  destinationId String                         @map("destination_id")
+  transitionKey String                         @map("transition_key")
+  status        OperationalAlertDeliveryStatus @default(pending)
+  attempts      Int                            @default(0)
+  nextAttemptAt DateTime?                      @map("next_attempt_at")
+  sentAt        DateTime?                      @map("sent_at")
+  lastError     String?                        @map("last_error")
+  createdAt     DateTime                       @default(now()) @map("created_at")
+  updatedAt     DateTime                       @updatedAt @map("updated_at")
+  alert         SystemAlert                    @relation(fields: [alertId], references: [id], onDelete: Cascade)
+  destination   OperationalAlertDestination    @relation(fields: [destinationId], references: [id], onDelete: Cascade)
+
+  @@unique([alertId, destinationId, transitionKey])
+  @@index([status, nextAttemptAt])
+  @@map("operational_alert_deliveries")
+}
+
+/// Precomputed rolling-7-day quality metrics for the admin overview +
+/// submissions list. Without this row both routes recompute four aggregates
+/// over `submissions`/`validation_results` on every request.
+///
+/// DELIBERATE DIVERGENCE from v1 (`prisma/schema.prisma:3375`), which stores
+/// four bare `Float` columns. This codebase's `computeCommunityQualityMetrics`
+/// returns a per-metric `measured | not_measured | not_configured` state, and
+/// four floats cannot represent "not measured" as anything other than `0.0` —
+/// which would render an unmeasured metric as a real 0% and violate the
+/// project invariant that missing/skipped/unconfigured checks are shown
+/// explicitly and never presented as passed. The full computed payload is
+/// stored instead, so a snapshot read is exactly as honest as a live compute.
+///
+/// Not a generic key-value table — one row per named metric set, so a
+/// stale/missing row is an explicit, typed condition the route can detect and
+/// surface, never silently presented as a real (if outdated) number.
+model AdminMetricsSnapshot {
+  /// Fixed key for the one row this table holds today ("quality_7d"). A
+  /// distinct id (not a singleton-by-convention empty table) so a second
+  /// metric set can be added later without a schema change. v1's
+  /// `quality_7d_paid` scope has no meaning here.
+  id         String   @id
+  /// A serialized `CommunityQualityMetrics`, states included.
+  payload    Json
+  computedAt DateTime @map("computed_at")
+
+  @@map("admin_metrics_snapshots")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Validator audit batches and per-item verdicts.
+//
+// PORTED FROM V1 (`prisma/schema.prisma` AuditBatch/AuditItem) MINUS THE FOUR
+// MONEY FIELDS. V1 declares `baseReward`, `issueBonus`, `bondRequired` and
+// `bondAmount` (BigInt micro-USDC) on AuditBatch; those are the paid track and
+// are omitted per D18. Every other field is neutral and kept verbatim.
+//
+// Confirmed against live staging before omitting them: all four are zero on
+// all 507 batches, so nothing is lost by their absence.
+//
+// WHY THIS EXISTS ALONGSIDE HumanAuditWindow. V1 runs BOTH models at once, and
+// both are community — staging holds 507 batches / 16,988 items against
+// community bounties, and 11 windows / 468 memberships. The rebuild had kept
+// only the window pair, which meant:
+//   * 16,988 community audit records had no table to live in;
+//   * a validator's per-item `verdict`/`decidedAt` was derived from
+//     `submissions.status` rather than recorded (services/audits.ts:400);
+//   * and 422 notes written by validators who APPROVED an item had nowhere at
+//     all to go — `flags` only holds reasons for flagged items, so an
+//     approving comment was simply unrepresentable.
+//
+// The window pair models statistical sampling (quota, HMAC selection); this
+// pair models the claim-and-decide record. They are not substitutes, which is
+// why V1 has both.
+//
+// NOTE FOR WHOEVER ALIGNS THE VALIDATOR FLOW: no current Community code path
+// writes to these tables — `services/audits.ts` drives HumanAuditWindow. This
+// pair currently holds migrated V1 history only. That is a deliberate,
+// recorded state, not an oversight: the data had to stop being destroyed
+// before the flow could be aligned.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AuditBatch {
+  id              String    @id @default(cuid())
+  bountyId        String    @map("bounty_id")
+  validatorUserId String?   @map("validator_user_id")
+  itemCount       Int       @map("item_count")
+  /// Free-form in V1 too (not an enum): "available", "claimed", "completed",
+  /// "overdue_review" are the values present on staging.
+  status          String    @default("available")
+  deadline        DateTime?
+  claimedAt       DateTime? @map("claimed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  bounty      Bounty            @relation(fields: [bountyId], references: [id], onDelete: Cascade)
+  validator   User?             @relation(fields: [validatorUserId], references: [id])
+  items       AuditItem[]
+  /// The sampling window this batch serves, 1:1. Absent on migrated v1 batches,
+  /// which predate the window model in this deployment.
+  auditWindow HumanAuditWindow?
+
+  @@index([bountyId])
+  @@index([status, validatorUserId, deadline, createdAt])
+  @@index([validatorUserId, status, claimedAt])
+  @@map("audit_batches")
+}
+
+model AuditItem {
+  id           String        @id @default(cuid())
+  auditBatchId String        @map("audit_batch_id")
+  submissionId String        @map("submission_id")
+  verdict      AuditVerdict?
+  flagReason   FlagReason?   @map("flag_reason")
+  /// The field with no equivalent anywhere else in this schema: a validator's
+  /// written comment, INCLUDING on an approved item. `flags` only carries a
+  /// reason/details for flagged submissions, so without this column 422 real
+  /// approving notes on staging were unrepresentable.
+  note         String?
+  decidedAt    DateTime?     @map("decided_at")
+
+  auditBatch AuditBatch @relation(fields: [auditBatchId], references: [id], onDelete: Cascade)
+  submission Submission @relation(fields: [submissionId], references: [id])
+
+  @@index([auditBatchId])
+  @@index([submissionId])
+  @@map("audit_items")
+}

@@ -1,0 +1,53 @@
+{
+  "datasetType": "websocket_realtime",
+  "name": "WebSocket / Real-Time Event Stream Verification",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "The server's behavior is classified into one of a small set of canonical archetypes (broadcast, private routing, room isolation, idempotent dedup, seq-id replay, capacity limit, connection-count query) and faithfully reimplemented as a real asyncio `websockets` server; the scripted client scenario is driven against it for real, and the actually-observed message delivery / connection outcome is compared against the claimed outcome.",
+  "difficultyLevels": ["intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 + websockets",
+  "dedupeFields": ["server_implementation", "event_sequence"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "server_implementation",
+      "label": "Server implementation",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true,
+      "help": "High-level asyncio-flavored pseudocode describing the server's message-handling logic. Not directly executable as written -- classified into a canonical archetype and reimplemented as real code for verification."
+    },
+    {
+      "key": "client_script",
+      "label": "Client script",
+      "role": "instruction",
+      "required": true,
+      "help": "Plain-English description of what the named clients do (connect / send / disconnect / reconnect / register)."
+    },
+    {
+      "key": "event_sequence",
+      "label": "Event sequence",
+      "role": "tests",
+      "required": true,
+      "help": "Executable scenario grammar: use `->`-separated actions with explicit client names. Supported canonical forms include `<clients> connect|register`, `<client> send|publish 'payload'`, `<client> disconnect|leave`, room `<clients> join <room>`, direct `{to:target,text:payload}`, sequence replay `server emits seq A-B total -> client reconnects with last_seen_seq_id=N`, and count `<client> ask|request count`. Keep observations out of the action chain. Legacy prose is best-effort only."
+    },
+    {
+      "key": "connection_scenario",
+      "label": "Connection scenario",
+      "role": "rationale",
+      "required": true,
+      "help": "Short scenario category tag, e.g. \"drop and reconnect mid-stream\", \"capacity limit exceeded\"."
+    },
+    {
+      "key": "expected_message_order_and_state",
+      "label": "Expected message order / state",
+      "role": "expected_output",
+      "required": true,
+      "help": "Exact claim over the simulated result. Prefer canonical forms such as `Every client receives alpha, then beta in that order.`, `only B receives the message; C receives nothing`, `client A receives only seq 3-5`, `A receives connections=2 then connections=1`, or `applied-values list ends up as [x, y]`. Include every query reply or delivery whose order matters."
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "datasetType": "schema_conformance_validation",
+  "name": "Schema Conformance Validation (JSON Schema / XSD)",
+  "domain": "coding",
+  "category": "implementation",
+  "trustTier": "execution_verified",
+  "version": 1,
+  "status": "active",
+  "description": "A contributor-authored validate(payload_text) -> bool function that must correctly classify a SET of test documents as schema-valid or schema-invalid, checked against a REAL, trusted validator's independently computed ground truth (Python's jsonschema library for JSON Schema rows, lxml.etree.XMLSchema for XSD rows) -- never against a row-declared 'expected' label. One category, one 'schema_language' enum selecting the format-specific verification path, the same pattern serialization's own 'format' enum already uses for its own multi-format design.",
+  "difficultyLevels": ["beginner", "intermediate", "advanced"],
+  "pipeline": ["schema", "dedupe", "contamination", "execution", "llm", "human_audit"],
+  "executionEnv": "python3 + jsonschema (JSON Schema, whichever draft schema_definition's own $schema declares, or the library's latest-known draft if absent) / lxml.etree.XMLSchema (XSD) -- ground truth for every test payload is computed by the REAL trusted library, in a process that never execs validation_code, never by trusting validation_code's own verdict.",
+  "dedupeFields": ["schema_definition", "validation_code"],
+  "auditOptions": [0, 25, 100],
+  "fields": [
+    {
+      "key": "task_description",
+      "label": "Task description",
+      "role": "instruction",
+      "required": true,
+      "help": "Natural-language description of what is being validated, e.g. 'validate a user-registration payload: required email/age fields, age must be 0-150, email must match a basic pattern' (JSON Schema rows), or 'validate a purchase-order XML document against a schema requiring a positive quantity and a valid ISO date' (XSD rows)."
+    },
+    {
+      "key": "schema_language",
+      "label": "Schema language",
+      "role": "enum",
+      "options": ["JSON Schema", "XSD"],
+      "required": true,
+      "help": "Selects which format-specific verification path this row runs: 'JSON Schema' validates JSON-text payloads with Python's jsonschema library; 'XSD' validates XML-text payloads with lxml's XMLSchema. Every other field's expected content depends on this value."
+    },
+    {
+      "key": "schema_definition",
+      "label": "Schema definition",
+      "role": "input_code",
+      "required": true,
+      "help": "Curator-authored, fixed context (never graded, never written by the contributor): the actual schema text. For a 'JSON Schema' row this must be valid JSON Schema, written as JSON text (e.g. '{\"type\":\"object\",\"required\":[\"email\",\"age\"],\"properties\":{...}}'). For an 'XSD' row this must be a valid XML Schema document, written as XML text (a '<xs:schema ...>...</xs:schema>' document). Checked for real against its own format's meta-schema/parser before anything else runs (jsonschema.validators.validator_for(...).check_schema(...) for JSON Schema; lxml.etree.XMLSchema(...) construction for XSD) -- a schema_definition that fails this check is rejected as a dataset-authoring defect, never scored against the contributor."
+    },
+    {
+      "key": "test_payloads",
+      "label": "Test payloads",
+      "role": "input_code",
+      "required": true,
+      "help": "Curator-authored, fixed context: a genuine JSON array literal of raw document-text STRINGS, e.g. [\"{\\\"email\\\":\\\"a@b.com\\\",\\\"age\\\":30}\", \"{\\\"email\\\":\\\"bad\\\",\\\"age\\\":200}\"] for a JSON Schema row, or [\"<purchaseOrder>...</purchaseOrder>\", \"...\"] for an XSD row -- each element is one complete JSON or XML document (matching text, not a parsed/nested JSON structure), passed to validation_code's validate() one at a time. Stored as an ordinary field whose value literally IS JSON array text (parsed with JSON.parse by the harness itself, never a role:\"list\" field -- a role:\"list\" field only splits a genuine JS array correctly and turns a plain string into ONE giant element, which this convention deliberately avoids, the same way sql_query_correctness's expected_result field does). REQUIRED to contain a genuine MIX: the harness independently computes the real jsonschema/lxml verdict for every entry and REJECTS the row outright if that real verdict is unanimous (all schema-valid, or all schema-invalid) across every payload -- a validator that hardcodes `return True`/`return False` would trivially pass an all-one-way set, so every row must contain at least one genuinely valid and at least one genuinely invalid document per the trusted oracle, never per anything this field or any other field merely claims."
+    },
+    {
+      "key": "validation_code",
+      "label": "Validation code (Python)",
+      "role": "solution_code",
+      "lang": "py",
+      "required": true,
+      "help": "THE GRADED ARTIFACT. Python code defining EXACTLY ONE top-level function named `validate` with signature `validate(payload_text: str) -> bool` -- a fixed, required name (not dynamically discovered), called once per entry in test_payloads with that entry's raw document text. Must return a value that is truthy for a schema-conformant document and falsy otherwise (coerced via bool()); an implementation may use jsonschema/lxml itself, or hand-roll its own checks -- either is legitimate, since this category never checks HOW the verdict was reached, only whether it matches the real trusted validator's verdict for every single payload in test_payloads. A validate() call that raises for one specific payload counts as ONLY that payload's verdict being wrong, not a whole-row crash."
+    }
+  ]
+}
