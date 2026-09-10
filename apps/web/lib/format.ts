@@ -39,6 +39,18 @@ export function pctOrDash(n?: number | null): string {
   return n == null ? "—" : `${Math.round(n * 100)}%`;
 }
 
+/** Completion percentage for a "count reached a target" claim (pool capacity,
+ * audit batch decided-count, etc.) — never `pct`/`pctOrDash`, which round
+ * freely and would show "100%" for e.g. 1000/1002 (99.8%, plain
+ * `Math.round` pushes anything ≥99.5% up to 100). Only literal completion
+ * (`count >= target`) may claim 100; anything short is capped at 99 so the
+ * UI never tells someone a pool/batch is done when it still needs more. */
+export function completionPct(count: number, target: number): number {
+  if (target <= 0) return 0;
+  if (count >= target) return 100;
+  return Math.min(99, Math.round((count / target) * 100));
+}
+
 export function shortAddr(addr: string): string {
   if (addr.length <= 10) return addr;
   return `${addr.slice(0, 4)}...${addr.slice(-4)}`;

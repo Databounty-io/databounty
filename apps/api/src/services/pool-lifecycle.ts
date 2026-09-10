@@ -4,7 +4,7 @@ import { createHmac } from "node:crypto";
 // `Prisma` is a value import (not `type`) because claimPoolAcceptanceSlot
 // builds its atomic UPDATE with Prisma.sql, mirroring the same
 // value-vs-type note in services/submissions.ts.
-import { BountyKind, BountyStatus, DisputeStatus, KarmaEventType, SubmissionStatus, Prisma } from "@prisma/client";
+import { BountyKind, BountyStatus, CommunityPublicationStatus, DisputeStatus, KarmaEventType, SubmissionStatus, Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { config } from "../config.js";
 import { awardOrHoldAcceptedItemKarma, defaultDisputeWindowHours } from "./karma-holds.js";
@@ -13,6 +13,7 @@ import { dbJobQueue } from "./jobs.js";
 import { emitAuditAvailableMatches, notifyUser } from "./notifications.js";
 import { writeAuditLog } from "../lib/audit-log.js";
 import { recomputeAcceptedItemCounters, FINAL_ACCEPTED_STATUSES } from "./submission-acceptance.js";
+import { enqueueCommunityPublish } from "./community-publish.js";
 
 /**
  * Community open-pool close-out + human-audit-window sampling
@@ -292,6 +293,10 @@ export interface PoolSettleOutcome {
   settled: number;
   completed: number;
   partiallyCompleted: number;
+  /** Pools whose dispute window elapsed under target, with no sponsor
+   * early-close on record — reopened instead of settled (see the "REOPEN vs
+   * SETTLE" note on this function). */
+  reopened: number;
 }
 
 /**
@@ -323,6 +328,51 @@ export interface PoolSettleOutcome {
  * and-swap pattern the rest of this file uses: `outcome.settled` only counts
  * the caller that actually wins the update, so two concurrent sweep ticks
  * settle a pool exactly once.
+ *
+ * SETTLE ALSO ENQUEUES PUBLICATION. Verified live (prod bounty
+ * `cmskdvm72009y1wp2ehodn8bj`, 2026-09-10): a pool could close, settle to
+ * `completed`, and sit there with zero `DatasetPublication` rows forever —
+ * nothing anywhere ever called `enqueueCommunityPublish` automatically.
+ * Publication was reachable ONLY through the admin console's
+ * `POST /community/bounties/:id/publication` (`request_review` /
+ * `start_publishing`), so a pool an admin hadn't gotten to yet stayed
+ * unpublished no matter how long its dispute window had elapsed — a silent
+ * gap, not a queue backlog (nothing was queued to be behind on). This is
+ * also what `docs/engineering/COMMUNITY_FULL_HUMAN_VALIDATION_PLAN.md` §11
+ * had recorded as already DONE (`autoPublishCompletedPolicyPools`,
+ * heartbeat-wired as `community-whole-pool-publish`) — that function and
+ * worker do not exist in this tree; the doc was stale. Fixed here rather
+ * than as a separate sweep because this function already recomputes the
+ * pool's true final shape and already runs on every settle tick, so settling
+ * is the one place a pool's completion becomes an established, durable fact.
+ * Gated on `communityLicense` being set and `publicationStatus` still at its
+ * default `not_requested` (a CAS on that column, mirroring the admin route's
+ * own `start_publishing` transition) — an admin who already started, failed,
+ * retried, published, or retracted this bounty's publication is left alone;
+ * this only fires the FIRST time a pool settles with nobody having touched
+ * publication yet. A bounty with no license set is left in `not_requested`
+ * for an admin to set the license and publish manually, exactly as the
+ * `runCommunityPublishJob` license guard already requires.
+ *
+ * REOPEN VS SETTLE (owner decision, 2026-09-10). Before this, an under-target
+ * pool whose dispute window elapsed always settled to `partially_completed`
+ * and sat closed forever — nobody could contribute the remaining slots, even
+ * though the sponsor never asked for the pool to stop early. The owner's
+ * instruction: an under-target pool should REOPEN (go back to accepting
+ * contributions) on window-elapse UNLESS the sponsor explicitly asked to
+ * close it early via `POST /v1/bounties/:id/close-pool`
+ * (`Bounty.sponsorClosedAt`, set once and never cleared by this function).
+ * So at settle time: `finalAcceptedItems >= targetItems` always settles
+ * `completed` as before; under target AND `sponsorClosedAt` set settles
+ * `partially_completed` as before (auto-publish still fires on both); under
+ * target AND `sponsorClosedAt` still null REOPENS instead of settling —
+ * exactly the same fields/semantics `recomputeAcceptedItemCounters`'s reopen
+ * branch (services/submission-acceptance.ts) already uses (poolClosedAt,
+ * disputeCycleWindowOpensAt, poolSamplingStartedAt, poolSamplingCompletedAt
+ * all cleared; status stays `active`; `community_pool.reopened` audit
+ * action, same name that function already uses for the symmetric case, not
+ * a second name for the same concept) — no settle, no publish, `Bounty`
+ * stays `not_requested`/whatever `publicationStatus` already was.
  */
 export async function settleDueCommunityPools(limit = 200): Promise<PoolSettleOutcome> {
   const defaultHours = await defaultDisputeWindowHours();
@@ -335,10 +385,19 @@ export async function settleDueCommunityPools(limit = 200): Promise<PoolSettleOu
     },
     orderBy: { poolClosedAt: "asc" },
     take: Math.max(1, limit),
-    select: { id: true, disputeCycleWindowOpensAt: true, disputeWindowHours: true, targetItems: true },
+    select: {
+      id: true,
+      poolClosedAt: true,
+      disputeCycleWindowOpensAt: true,
+      disputeWindowHours: true,
+      targetItems: true,
+      communityLicense: true,
+      publicationStatus: true,
+      sponsorClosedAt: true,
+    },
   });
 
-  const outcome: PoolSettleOutcome = { scanned: 0, settled: 0, completed: 0, partiallyCompleted: 0 };
+  const outcome: PoolSettleOutcome = { scanned: 0, settled: 0, completed: 0, partiallyCompleted: 0, reopened: 0 };
   const now = new Date();
   for (const bounty of due) {
     outcome.scanned += 1;
@@ -382,8 +441,46 @@ export async function settleDueCommunityPools(limit = 200): Promise<PoolSettleOu
         where: { bountyId: bounty.id, status: { in: FINAL_ACCEPTED_STATUSES } },
       });
       const target = Number(bounty.targetItems);
-      const nextStatus =
-        target > 0 && finalAcceptedItems >= target ? BountyStatus.completed : BountyStatus.partially_completed;
+      const reachedTarget = target > 0 && finalAcceptedItems >= target;
+
+      // REOPEN, not settle: under target, and the sponsor never asked to
+      // close early. See the "REOPEN VS SETTLE" doc note above this
+      // function. Uses the exact same CAS + cleared fields as
+      // `recomputeAcceptedItemCounters`'s reopen branch
+      // (services/submission-acceptance.ts) so the two reopen paths cannot
+      // drift out of sync with each other.
+      if (!reachedTarget && !bounty.sponsorClosedAt) {
+        const reopenClaim = await tx.bounty.updateMany({
+          where: { id: bounty.id, poolClosedAt: { not: null } },
+          data: {
+            poolClosedAt: null,
+            disputeCycleWindowOpensAt: null,
+            poolSamplingStartedAt: null,
+            poolSamplingCompletedAt: null,
+            finalAcceptedItems: BigInt(finalAcceptedItems),
+          },
+        });
+        if (reopenClaim.count === 0) return null; // another tick already handled this pool
+
+        await writeAuditLog(tx, {
+          actorUserId: null,
+          action: "community_pool.reopened",
+          targetType: "bounty",
+          targetId: bounty.id,
+          before: { poolClosedAt: bounty.poolClosedAt ? bounty.poolClosedAt.toISOString() : null, status: "active" },
+          after: { poolClosedAt: null, status: "active" },
+          metadata: {
+            trigger: "dispute_window_elapsed_under_target_no_sponsor_close",
+            targetItems: String(target),
+            finalAcceptedItems: String(finalAcceptedItems),
+            disputeWindowHours: String(windowHours),
+          },
+        });
+
+        return { reopened: true as const };
+      }
+
+      const nextStatus = reachedTarget ? BountyStatus.completed : BountyStatus.partially_completed;
       const claim = await tx.bounty.updateMany({
         where: { id: bounty.id, disputeCycleSettledAt: null },
         data: { disputeCycleSettledAt: now, status: nextStatus, finalAcceptedItems: BigInt(finalAcceptedItems) },
@@ -403,15 +500,56 @@ export async function settleDueCommunityPools(limit = 200): Promise<PoolSettleOu
           disputeWindowHours: String(windowHours),
         },
       });
-      return nextStatus;
+
+      // See the doc comment above this function: settling is the one place a
+      // pool's completion becomes durable, so it is also the one place that
+      // fires publication automatically — nothing else in this codebase ever
+      // does. CAS on `publicationStatus: not_requested` so this only ever
+      // fires the first time and never overrides an admin who already acted
+      // (started, retried, failed, published, retracted). No license yet:
+      // leave the bounty at `not_requested` for an admin to set one and
+      // publish manually — `runCommunityPublishJob` requires it too.
+      let publishQueued = false;
+      if (bounty.communityLicense && bounty.publicationStatus === CommunityPublicationStatus.not_requested) {
+        const publishClaim = await tx.bounty.updateMany({
+          where: { id: bounty.id, publicationStatus: CommunityPublicationStatus.not_requested },
+          data: { publicationStatus: CommunityPublicationStatus.pending },
+        });
+        publishQueued = publishClaim.count === 1;
+        if (publishQueued) {
+          await writeAuditLog(tx, {
+            actorUserId: null,
+            action: "admin.community_publication.publish_queued",
+            targetType: "Bounty",
+            targetId: bounty.id,
+            before: { publicationStatus: "not_requested" },
+            after: { publicationStatus: "pending" },
+            metadata: { trigger: "pool_settled_auto_publish" },
+          });
+        }
+      }
+      return { status: nextStatus, publishQueued, reopened: false as const };
     });
 
-    if (result === BountyStatus.completed) {
+    if (result?.reopened) {
+      outcome.reopened += 1;
+      continue; // no settle, no publish — the pool is open again
+    }
+
+    if (result?.status === BountyStatus.completed) {
       outcome.settled += 1;
       outcome.completed += 1;
-    } else if (result === BountyStatus.partially_completed) {
+    } else if (result?.status === BountyStatus.partially_completed) {
       outcome.settled += 1;
       outcome.partiallyCompleted += 1;
+    }
+
+    // Enqueue after the transaction commits, same pattern as the admin
+    // `start_publishing` route (`enqueueCommunityPublish` upserts on a
+    // bounty-scoped idempotency key, so this is always safe even if a
+    // concurrent admin action also enqueues it).
+    if (result?.publishQueued) {
+      await enqueueCommunityPublish(bounty.id);
     }
   }
   return outcome;

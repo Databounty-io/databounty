@@ -30,7 +30,7 @@ import { LANDING_URL } from "@/lib/urls";
 import { useDemo } from "@/lib/store";
 import { useCommunityKarma } from "@/lib/use-community-karma";
 import { useDebouncedValue, useLatestRequest } from "@/lib/use-list-search";
-import { num, deadlineLabel, VALIDATOR_RANKS } from "@/lib/format";
+import { num, deadlineLabel, completionPct, VALIDATOR_RANKS } from "@/lib/format";
 import {
   getMyAuditsPage,
   auditRowPublication,
@@ -447,7 +447,7 @@ export default function ValidatorWorkspaceView() {
             {activeAudits.map((audit) => {
               const decided = audit.decidedCount ?? 0;
               const total = audit.itemCount;
-              const pct = total > 0 ? Math.round((decided / total) * 100) : 0;
+              const pct = completionPct(decided, total);
               return (
                 // `min-w-0` on the grid ITEM, not just the inner title block.
                 // A grid item defaults to `min-width: auto`, so the track is

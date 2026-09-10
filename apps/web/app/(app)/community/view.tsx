@@ -9,7 +9,7 @@ import { Icon } from "@/components/icons";
 import { Button, CursorPager, Empty, Pill, Progress, SearchField, Select, Stat } from "@/components/ui";
 import { CommunityRequestCard } from "@/components/community-request-card";
 import { type DatasetRequestFull } from "@/components/dataset-request-detail";
-import { num } from "@/lib/format";
+import { num, completionPct } from "@/lib/format";
 import { useDebouncedValue, useLatestRequest } from "@/lib/use-list-search";
 import { API } from "@/lib/api-endpoints";
 import { authedFetch } from "@/lib/store";
@@ -221,7 +221,7 @@ export function CommunityView() {
               // finally-accepted count: items that passed automation already
               // hold capacity and are what close the pool.
               const cleared = pool.poolSummary?.capacityReserved ?? (pool.clearedItems == null ? accepted : Number(pool.clearedItems) || 0);
-              const pct = target > 0 ? Math.min(100, Math.round((cleared / target) * 100)) : 0;
+              const pct = completionPct(cleared, target);
               const perItem = pool.karmaPricing?.contributorPerItem ?? pool.karmaPerAcceptedItem;
               const upToTotal = pool.karmaPricing?.contributorTotal ?? pool.karmaPerAcceptedItem * target;
               return (

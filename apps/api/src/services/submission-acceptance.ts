@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { BountyKind, SubmissionStatus, type Prisma } from "@prisma/client";
+import { BountyKind, BountyStatus, SubmissionStatus, type Prisma } from "@prisma/client";
 import { writeAuditLog } from "../lib/audit-log.js";
 import { enqueuePoolSampling } from "./pool-lifecycle.js";
 
@@ -37,6 +37,9 @@ export interface AcceptedItemCounters {
   finalAcceptedItems: number;
   /** True only for the call that actually flipped `poolClosedAt` from null. */
   poolJustClosed: boolean;
+  /** True only for the call that actually flipped `poolClosedAt` back to
+   * null because the recounted capacity fell back under target. */
+  poolJustReopened: boolean;
 }
 
 /**
@@ -77,6 +80,33 @@ export interface AcceptedItemCounters {
  * enqueued under the same idempotency key — the downstream pipeline cannot
  * tell which path closed the pool. Only the caller that wins the CAS
  * enqueues, so a pool is closed and sampled exactly once.
+ *
+ * REOPEN. Closing is NOT one-shot in practice, whatever the schema comment on
+ * `Bounty.poolClosedAt` used to claim — a closed pool's capacity can still
+ * drop below target afterward (a validator flags an `in_audit` item, an
+ * admin overturns a dispute to `rejected`), and nothing brought the pool back
+ * open when that happened. Verified live: a bounty that hit 1000/1000,
+ * closed, then had one accepted item rejected in human audit sat permanently
+ * closed at 999/1000 — invisible to every contributor despite genuinely
+ * having a free slot. So the symmetric case: if the bounty is a community
+ * pool that is currently closed, has a positive target, and the recounted
+ * capacity has fallen back under it, `poolClosedAt` (and the dispute-review
+ * clock `disputeCycleWindowOpensAt`, which must not keep counting down toward
+ * a settlement the pool no longer deserves) are cleared through the same
+ * `poolClosedAt: { not: null }` compare-and-swap, so two concurrent recounts
+ * can't double-fire the reopen either. The sampling markers
+ * (`poolSamplingStartedAt`/`poolSamplingCompletedAt`) are cleared too: they
+ * gate `runPoolSamplingJob` on a per-bounty "already ran" flag, and leaving
+ * them set would make a legitimate future re-close's re-enqueued sampling job
+ * silently no-op instead of actually sampling the newly-accepted item(s). If
+ * `settleDueCommunityPools` had already auto-settled the pool to
+ * `completed`/`partially_completed` before this recount ran, that is reverted
+ * to `active` (and `disputeCycleSettledAt` cleared) too — a pool an admin
+ * explicitly moved to `disputed`/`paused`/`cancelled` is left alone, same
+ * carve-out `settleDueCommunityPools` itself applies. See
+ * `services/pool-lifecycle.ts` and `services/karma-holds.ts` for why each of
+ * those was safe to touch here (nothing else assumes `poolClosedAt` is
+ * permanent once written).
  */
 export async function recomputeAcceptedItemCounters(
   tx: Prisma.TransactionClient,
@@ -86,7 +116,14 @@ export async function recomputeAcceptedItemCounters(
   await tx.$queryRaw`SELECT id FROM bounties WHERE id = ${bountyId} FOR UPDATE`;
   const bounty = await tx.bounty.findUnique({
     where: { id: bountyId },
-    select: { kind: true, targetItems: true, acceptedItems: true, finalAcceptedItems: true, poolClosedAt: true },
+    select: {
+      kind: true,
+      status: true,
+      targetItems: true,
+      acceptedItems: true,
+      finalAcceptedItems: true,
+      poolClosedAt: true,
+    },
   });
   if (!bounty) throw new Error(`bounty ${bountyId} not found while recomputing accepted-item counters`);
 
@@ -146,5 +183,60 @@ export async function recomputeAcceptedItemCounters(
     });
   }
 
-  return { acceptedItems, finalAcceptedItems, poolJustClosed };
+  // Symmetric reopen: a pool that is currently closed but whose recounted
+  // capacity has fallen back under target (a slot-holding item left the
+  // counted set after close — flagged in human audit, rejected on a
+  // dispute overturn) gets the close undone through the same CAS pattern.
+  const shouldReopen =
+    bounty.kind === BountyKind.community && bounty.poolClosedAt !== null && target > 0 && acceptedItems < target;
+
+  let poolJustReopened = false;
+  if (shouldReopen) {
+    // If settleDueCommunityPools already auto-settled this pool to a
+    // terminal status before this recount ran, undo that too — a pool
+    // sitting at `completed`/`partially_completed` never shows up in
+    // listOpenPoolsForContributor's `status: active` filter no matter what
+    // poolClosedAt says, so reopening capacity without reopening status
+    // would leave the pool exactly as unreachable as before. Never override
+    // a status an admin explicitly set (disputed/paused/cancelled) —
+    // settleDueCommunityPools carves out the same set for the same reason.
+    const wasAutoSettled = bounty.status === BountyStatus.completed || bounty.status === BountyStatus.partially_completed;
+
+    const claim = await tx.bounty.updateMany({
+      where: { id: bountyId, poolClosedAt: { not: null } },
+      data: {
+        poolClosedAt: null,
+        disputeCycleWindowOpensAt: null,
+        // One-shot markers for the sampling job that just ran (or is
+        // in-flight) — leaving them set would make a future re-close's
+        // re-enqueued `pool.sampling` job see `poolSamplingCompletedAt`
+        // still stamped and no-op instead of actually sampling the newly
+        // accepted item(s).
+        poolSamplingStartedAt: null,
+        poolSamplingCompletedAt: null,
+        ...(wasAutoSettled ? { status: BountyStatus.active, disputeCycleSettledAt: null } : {}),
+      },
+    });
+    poolJustReopened = claim.count === 1;
+
+    if (poolJustReopened) {
+      await writeAuditLog(tx, {
+        actorUserId: null,
+        action: "community_pool.reopened",
+        targetType: "bounty",
+        targetId: bountyId,
+        before: { poolClosedAt: bounty.poolClosedAt ? bounty.poolClosedAt.toISOString() : null, status: bounty.status },
+        after: { poolClosedAt: null, status: wasAutoSettled ? BountyStatus.active : bounty.status },
+        metadata: {
+          trigger: "pool_capacity_dropped_below_target",
+          targetItems: String(target),
+          acceptedItems: String(acceptedItems),
+          finalAcceptedItems: String(finalAcceptedItems),
+          revertedAutoSettle: String(wasAutoSettled),
+        },
+      });
+    }
+  }
+
+  return { acceptedItems, finalAcceptedItems, poolJustClosed, poolJustReopened };
 }

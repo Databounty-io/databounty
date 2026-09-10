@@ -1425,11 +1425,17 @@ model Bounty {
   // acceptedItems in recomputeAcceptedItemCounters so the two can't drift.
   finalAcceptedItems            BigInt                     @default(0) @map("final_accepted_items")
   // Community open-pool lifecycle (COMMUNITY_OPEN_POOL_PLAN_V2 §3.3/§8/§9).
-  // All three are null until a community pool reaches targetItems; set once,
-  // in order, never reset — the pool is one-shot (§9). Follows the same
-  // nullable-timestamp-marks-a-state-entry pattern as pilotReviewStartedAt
-  // above rather than a separate enum, since there is no reachable branching
-  // state here (closed -> sampling -> released is a strict linear sequence).
+  // All three are null until a community pool reaches targetItems, then set
+  // together in that order as the pool closes and samples. NOT one-shot in
+  // practice, whatever this comment used to claim: recomputeAcceptedItemCounters
+  // (services/submission-acceptance.ts) clears all three back to null if a
+  // closed pool's recounted capacity falls back under target (a slot-holding
+  // item left the counted set after close — flagged in human audit, rejected
+  // on a dispute overturn) — verified live as a real stuck-closed pool bug.
+  // Follows the same nullable-timestamp-marks-a-state-entry pattern as
+  // pilotReviewStartedAt above rather than a separate enum, since the only
+  // branching this state machine needs (closed <-> reopened, then normally
+  // sampling -> released) is exactly what the reopen path above adds.
   poolClosedAt                  DateTime?                  @map("pool_closed_at")
   poolSamplingStartedAt         DateTime?                  @map("pool_sampling_started_at")
   poolSamplingCompletedAt       DateTime?                  @map("pool_sampling_completed_at")
@@ -1450,6 +1456,19 @@ model Bounty {
   // check needed because the window math alone already covers it.
   disputeCycleWindowOpensAt     DateTime?                  @map("dispute_cycle_window_opens_at")
   disputeCycleSettledAt         DateTime?                  @map("dispute_cycle_settled_at")
+  // Sponsor-initiated early close (owner decision, 2026-09-10). Null means the
+  // sponsor has never asked to close this pool early. Set means they have, via
+  // POST /v1/bounties/:id/close-pool — and it changes what an under-target
+  // settle means: settleDueCommunityPools (services/pool-lifecycle.ts) REOPENS
+  // an under-target pool whose dispute window elapses UNLESS this is set, in
+  // which case it settles `partially_completed` exactly as before. This is
+  // deliberately separate from poolClosedAt (which just means "capacity
+  // reserved, in its dispute-review window" and is NOT one-shot — see the
+  // reopen comment on `recomputeAcceptedItemCounters` above) — sponsorClosedAt
+  // records sponsor INTENT, and unlike poolClosedAt it is one-shot: once a
+  // sponsor asks to stop taking contributions, that decision does not get
+  // silently undone by a later capacity recount.
+  sponsorClosedAt               DateTime?                  @map("sponsor_closed_at")
   createdAt                     DateTime                   @default(now()) @map("created_at")
   updatedAt                     DateTime                   @updatedAt @map("updated_at")
 

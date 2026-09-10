@@ -945,22 +945,21 @@ export default function SubmissionDetailPage() {
         }
         right={
           <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
+            {/* Headless, like every other AutoRefreshControl call site in this
+                app (karma, sponsor, validator/audit) -- the owner removed the
+                visible "Refresh"/interval control app-wide on 2026-09-07 and
+                the behaviour stays silent. This page previously showed its
+                own static "auto-refresh · 15s" badge, which never actually
+                counted down (a fixed label, not a live timer) and vanished
+                whenever the submission left an active status -- both read as
+                bugs, and it duplicated a pattern the shared component already
+                owns. Removed rather than fixed in place. */}
             <AutoRefreshControl
               onRefresh={() => refreshSubmission(false)}
               refreshing={refreshing}
               enabled={isSubmissionActive}
               defaultSeconds={ACTIVE_VALIDATION_REFRESH_SECONDS}
             />
-            {isSubmissionActive && (
-              <span
-                className="inline-flex items-center gap-1.5 rounded-full border border-line-soft bg-panel px-2.5 py-1 font-mono text-[10px] text-ink-soft"
-                role="status"
-                aria-live="polite"
-              >
-                <Icon name="refresh" size={12} className={refreshing ? "animate-spin" : ""} />
-                {refreshing ? "refreshing validation…" : `auto-refresh · ${ACTIVE_VALIDATION_REFRESH_SECONDS}s`}
-              </span>
-            )}
             <Button variant="secondary" size="sm" onClick={() => setHistoryOpen(true)}>
               <Icon name="clock" size={14} />
               Audit history

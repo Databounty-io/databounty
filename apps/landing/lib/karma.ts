@@ -7,6 +7,8 @@
 /* unlock priority and public recognition.                            */
 /* ------------------------------------------------------------------ */
 
+import { completionPct } from "./format";
+
 export type KarmaTier = "dharma" | "bodhi" | "moksha" | "nirvana";
 
 export interface KarmaTierDef {
@@ -107,7 +109,7 @@ export function nextTierProgress(points: number): {
   return {
     next,
     remaining: Math.max(0, next.min - points),
-    pct: Math.min(100, Math.round((into / span) * 100)),
+    pct: completionPct(into, span),
   };
 }
 

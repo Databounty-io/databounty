@@ -10,6 +10,8 @@ import { awardOrHoldAcceptedItemKarma } from "../../services/karma-holds.js";
 import { listSponsorSubmissionEvidence, getSponsorSubmissionEvidence, SponsorEvidenceError } from "../../services/sponsor-evidence.js";
 import { notifyUser } from "../../services/notifications.js";
 import { recomputeAcceptedItemCounters } from "../../services/submission-acceptance.js";
+import { enqueuePoolSampling } from "../../services/pool-lifecycle.js";
+import { writeAuditLog } from "../../lib/audit-log.js";
 import { requireAnyScope, requireAuth, requireScope, requireVerifiedEmail, type AuthedUser } from "../../lib/rbac.js";
 import { ApiKeyScope, BountyKind, BountyStatus, FlagReason, GenerationMethod, KarmaEventType, SubmissionStatus } from "@prisma/client";
 
@@ -343,5 +345,92 @@ export async function bountyRoutes(app: FastifyInstance) {
     }
 
     return reply.send({ ok: true });
+  });
+
+  // Sponsor-initiated early close (owner decision, 2026-09-10). By default an
+  // under-target community pool REOPENS when its dispute window elapses
+  // (services/pool-lifecycle.ts `settleDueCommunityPools`) — only a genuine
+  // sponsor "stop taking contributions now" or an actually-reached target
+  // settles it for good. This route is how a sponsor records that intent.
+  //
+  // Sets `Bounty.sponsorClosedAt` (one-shot; never cleared by this route or
+  // by settle/reopen). If the pool's own intake window is still open
+  // (`poolClosedAt` null), this ALSO force-closes it right now — same
+  // close-out semantics `checkAndClosePoolIfTargetReached` /
+  // `recomputeAcceptedItemCounters`'s close branch already use (stamp
+  // `poolClosedAt`/`disputeCycleWindowOpensAt`, enqueue `pool.sampling`).
+  // Factoring that close-out into one shared helper alongside those two
+  // existing call sites was judged too invasive for this route's scope; the
+  // duplication here follows their exact pattern (same CAS idiom, same
+  // fields) rather than inventing a new one.
+  //
+  // Idempotent: a second call is not an error. The CAS on
+  // `sponsorClosedAt: null` means only the first call actually writes
+  // anything; every call after that returns 200 with `alreadyClosed: true`
+  // so the frontend can render "already closing" rather than an error.
+  app.post("/:id/close-pool", { preHandler: [requireAuth, requireVerifiedEmail] }, async (req, reply) => {
+    const user = (req as FastifyRequest & { authedUser: AuthedUser }).authedUser;
+    const { id } = req.params as { id: string };
+
+    const bounty = await prisma.bounty.findUnique({ where: { id } });
+    // 404 (never 403) for both "no such pool" and "not this caller's pool" —
+    // deliberately do not confirm to a non-owner that a given bounty id
+    // exists, matching the route contract handed to the frontend agent.
+    if (!bounty) return reply.notFound("Dataset pool not found");
+    const isOwner = bounty.requesterUserId === user.id || bounty.communityRequesterUserId === user.id;
+    if (!isOwner && !user.roles.includes("admin")) {
+      return reply.notFound("Dataset pool not found");
+    }
+    if (bounty.kind !== BountyKind.community) {
+      return reply.badRequest("Only community pools can be closed early.");
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const now = new Date();
+      // CAS on sponsorClosedAt: null — only the caller that actually wins
+      // this update proceeds to (maybe) force-close the pool and write the
+      // audit log; every other caller (including a genuine concurrent
+      // double-click) sees count === 0 and is told the pool is already
+      // closing, without erroring.
+      const claim = await tx.bounty.updateMany({
+        where: { id, sponsorClosedAt: null },
+        data: { sponsorClosedAt: now },
+      });
+      if (claim.count === 0) return { alreadyClosed: true as const };
+
+      const current = await tx.bounty.findUniqueOrThrow({ where: { id } });
+      const poolWasOpen = current.poolClosedAt === null;
+
+      if (poolWasOpen) {
+        const closeClaim = await tx.bounty.updateMany({
+          where: { id, poolClosedAt: null },
+          data: { poolClosedAt: now, disputeCycleWindowOpensAt: now },
+        });
+        if (closeClaim.count === 1) {
+          await enqueuePoolSampling(id, tx);
+        }
+      }
+
+      await writeAuditLog(tx, {
+        actorUserId: user.id,
+        action: "community_pool.sponsor_closed",
+        targetType: "bounty",
+        targetId: id,
+        before: { sponsorClosedAt: null, poolClosedAt: current.poolClosedAt ? current.poolClosedAt.toISOString() : null },
+        after: { sponsorClosedAt: now.toISOString(), poolClosedAt: poolWasOpen ? now.toISOString() : (current.poolClosedAt?.toISOString() ?? null) },
+        metadata: {
+          trigger: "sponsor_close_pool_early",
+          forcedPoolClose: String(poolWasOpen),
+          targetItems: String(bounty.targetItems),
+          acceptedItems: String(bounty.acceptedItems),
+          finalAcceptedItems: String(bounty.finalAcceptedItems),
+        },
+      });
+
+      return { alreadyClosed: false as const };
+    });
+
+    const pool = await getCommunityPool(id);
+    return reply.send({ bounty: pool, alreadyClosed: result.alreadyClosed });
   });
 }

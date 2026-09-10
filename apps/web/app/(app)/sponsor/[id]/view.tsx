@@ -19,6 +19,7 @@ import {
   ConfirmDialog,
   AsyncState,
   Empty,
+  InfoTip,
   Modal,
   PillTabs,
   Pagination,
@@ -30,7 +31,7 @@ import {
 } from "@/components/ui";
 import { SponsorReferenceManager } from "@/components/artifacts";
 import { StatRail, type StatCell } from "@/components/workspace";
-import { pct, karmaPerItemLabel } from "@/lib/format";
+import { pct, karmaPerItemLabel, completionPct, BOUNTY_STATUS_HELP } from "@/lib/format";
 import {
   RequestReviewConversation,
   RequestSpecGrid,
@@ -157,6 +158,9 @@ export function SponsorProgramView() {
   const [disputeReason, setDisputeReason] = useState<string>(DISPUTE_REASONS[0].value);
   const [disputeArgument, setDisputeArgument] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
+
+  const [closePoolConfirmOpen, setClosePoolConfirmOpen] = useState(false);
+  const [closePoolBusy, setClosePoolBusy] = useState(false);
 
   const fetchProgram = useCallback(async () => {
     if (!id) return;
@@ -306,6 +310,39 @@ export function SponsorProgramView() {
     }
   };
 
+  const handleClosePool = async () => {
+    if (!bounty) return;
+    setClosePoolBusy(true);
+    try {
+      const res = await authedFetch(API.bounties.closePool(bounty.id), { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(safeMessage(err.message, "Could not close the pool"));
+      }
+      const data = (await res.json().catch(() => ({}))) as { alreadyClosed?: boolean };
+      pushToast({
+        variant: "success",
+        title: data.alreadyClosed ? "Pool already closed" : "Pool closed early",
+        body: data.alreadyClosed
+          ? "This pool was already closed — no new contributions are being accepted."
+          : "No new contributions will be accepted. Accepted items settle and the dataset publishes automatically once processing completes.",
+      });
+      setClosePoolConfirmOpen(false);
+      // Refreshes status, completion %, and the lifecycle phases below so the
+      // sponsor sees the closure (and the settle/publish steps that follow)
+      // reflected here, not just in a toast that disappears.
+      await fetchProgram();
+    } catch (err) {
+      pushToast({
+        variant: "error",
+        title: "Could not close pool",
+        body: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setClosePoolBusy(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="space-y-4">
@@ -340,7 +377,11 @@ export function SponsorProgramView() {
   const needsSponsorExamples = requiredExamples > 0;
   const accepted = bounty.acceptedItems ?? 0;
   const target = bounty.targetItems ?? 0;
-  const pctAccepted = target > 0 ? Math.round((accepted / target) * 100) : 0;
+  const pctAccepted = completionPct(accepted, target);
+  // Only an open pool has anything to close early — once it's already
+  // closing/settling/completed/cancelled/disputed there is nothing for this
+  // action to do, and the server would reject or no-op it anyway.
+  const canClosePool = bounty.status === "active" || bounty.status === "paused";
 
   const statCells: StatCell[] = [
     {
@@ -406,8 +447,16 @@ export function SponsorProgramView() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            <BountyStatusPill status={bounty.status} />
+            <span className="flex items-center gap-1.5">
+              <BountyStatusPill status={bounty.status} />
+              <InfoTip label={`About the "${bounty.status}" status`} text={BOUNTY_STATUS_HELP[bounty.status]} />
+            </span>
             {publication && <PublicationStatus publication={publication} compact />}
+            {canClosePool && (
+              <Button size="sm" variant="secondary" onClick={() => setClosePoolConfirmOpen(true)}>
+                Close pool early
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -684,6 +733,19 @@ export function SponsorProgramView() {
           confirmDisabled={actionBusy}
           onConfirm={handleReviewAction}
           onCancel={() => { setActingSubmission(null); setActionType(null); }}
+        />
+      )}
+
+      {/* Close Pool Early Dialog */}
+      {closePoolConfirmOpen && (
+        <ConfirmDialog
+          open={true}
+          title="Close this pool early?"
+          description="This permanently stops new contributions to this community pool. Whatever has been accepted so far settles as-is — the dataset publishes automatically once processing completes, even if it's under your original target. This cannot be undone."
+          confirmLabel={closePoolBusy ? "Closing…" : "Close pool"}
+          confirmDisabled={closePoolBusy}
+          onConfirm={handleClosePool}
+          onCancel={() => setClosePoolConfirmOpen(false)}
         />
       )}
 

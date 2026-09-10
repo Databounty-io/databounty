@@ -24,6 +24,7 @@ import {
   PUBLISH_BOUNTY_SELECT,
   selectAcceptedSubmissionsForPublication,
 } from "./community-publish.js";
+import { settleDueCommunityPools } from "./pool-lifecycle.js";
 import { requireDisposableDatabase } from "../test-support/require-disposable-database.js";
 
 requireDisposableDatabase();
@@ -107,6 +108,7 @@ async function acceptSubmission(bountyId: string, contributorUserId: string, tit
 }
 
 afterAll(async () => {
+  await prisma.jobQueue.deleteMany({ where: { idempotencyKey: { in: createdBountyIds.map((id) => `community.publish:${id}`) } } });
   await prisma.datasetPublication.deleteMany({ where: { bountyId: { in: createdBountyIds } } });
   await prisma.submission.deleteMany({ where: { bountyId: { in: createdBountyIds } } });
   await prisma.bounty.deleteMany({ where: { id: { in: createdBountyIds } } });
@@ -253,5 +255,111 @@ describe("credit-manifest integration — buildManifest / datasetCard", () => {
     expect(manifest.contributors.anonymizedCount).toBe(1);
     const card = datasetCard(publishBounty, manifest);
     expect(card).toContain("_No contributors opted into public credit._");
+  });
+});
+
+// ── settleDueCommunityPools now enqueues publication on settle. Real prod
+// gap (bounty cmskdvm72009y1wp2ehodn8bj, 2026-09-10): a pool could close,
+// settle to completed, and sit with zero DatasetPublication rows forever --
+// nothing anywhere ever called enqueueCommunityPublish automatically.
+describe("settleDueCommunityPools — auto-publish on settle", () => {
+  it("queues publication (publicationStatus: pending, a real community.publish job row) for a closed, licensed, due pool", async () => {
+    const requester = await makeUser("settle-auto-pub");
+    const bounty = await makeCommunityBounty({ requesterUserId: requester.id });
+    await acceptSubmission(bounty.id, requester.id, "item one");
+    await acceptSubmission(bounty.id, requester.id, "item two");
+
+    const past = new Date(Date.now() - 60_000);
+    await prisma.bounty.update({
+      where: { id: bounty.id },
+      data: {
+        poolClosedAt: past,
+        disputeCycleWindowOpensAt: past,
+        status: "active",
+        disputeWindowHours: 0, // elapses immediately, no real wait in a test
+        finalAcceptedItems: BigInt(2),
+        acceptedItems: BigInt(2),
+      },
+    });
+
+    const outcome = await settleDueCommunityPools();
+    expect(outcome.scanned).toBeGreaterThanOrEqual(1);
+
+    const settled = await prisma.bounty.findUniqueOrThrow({ where: { id: bounty.id } });
+    expect(settled.status).toBe("completed");
+    expect(settled.disputeCycleSettledAt).not.toBeNull();
+    expect(settled.publicationStatus).toBe(CommunityPublicationStatus.pending);
+
+    const job = await prisma.jobQueue.findUnique({
+      where: { idempotencyKey: `community.publish:${bounty.id}` },
+    });
+    expect(job).not.toBeNull();
+    expect(job?.type).toBe("community.publish");
+    expect(job?.status).toBe("pending");
+  });
+
+  it("never overrides an admin who already acted on publication (publicationStatus not at its not_requested default)", async () => {
+    const requester = await makeUser("settle-auto-pub-guard");
+    const bounty = await makeCommunityBounty({ requesterUserId: requester.id });
+    await acceptSubmission(bounty.id, requester.id, "item one");
+    await acceptSubmission(bounty.id, requester.id, "item two");
+
+    const past = new Date(Date.now() - 60_000);
+    await prisma.bounty.update({
+      where: { id: bounty.id },
+      data: {
+        poolClosedAt: past,
+        disputeCycleWindowOpensAt: past,
+        status: "active",
+        disputeWindowHours: 0,
+        finalAcceptedItems: BigInt(2),
+        acceptedItems: BigInt(2),
+        // Simulate an admin who already retracted a prior publish -- settle
+        // must leave this alone, never re-queue behind their back.
+        publicationStatus: CommunityPublicationStatus.retracted,
+      },
+    });
+
+    await settleDueCommunityPools();
+
+    const settled = await prisma.bounty.findUniqueOrThrow({ where: { id: bounty.id } });
+    expect(settled.status).toBe("completed");
+    expect(settled.publicationStatus).toBe(CommunityPublicationStatus.retracted);
+
+    const job = await prisma.jobQueue.findUnique({
+      where: { idempotencyKey: `community.publish:${bounty.id}` },
+    });
+    expect(job).toBeNull();
+  });
+
+  it("leaves an unlicensed pool at not_requested for manual admin publish", async () => {
+    const requester = await makeUser("settle-auto-pub-nolicense");
+    const bounty = await makeCommunityBounty({ requesterUserId: requester.id, communityLicense: null });
+    await acceptSubmission(bounty.id, requester.id, "item one");
+    await acceptSubmission(bounty.id, requester.id, "item two");
+
+    const past = new Date(Date.now() - 60_000);
+    await prisma.bounty.update({
+      where: { id: bounty.id },
+      data: {
+        poolClosedAt: past,
+        disputeCycleWindowOpensAt: past,
+        status: "active",
+        disputeWindowHours: 0,
+        finalAcceptedItems: BigInt(2),
+        acceptedItems: BigInt(2),
+      },
+    });
+
+    await settleDueCommunityPools();
+
+    const settled = await prisma.bounty.findUniqueOrThrow({ where: { id: bounty.id } });
+    expect(settled.status).toBe("completed");
+    expect(settled.publicationStatus).toBe(CommunityPublicationStatus.not_requested);
+
+    const job = await prisma.jobQueue.findUnique({
+      where: { idempotencyKey: `community.publish:${bounty.id}` },
+    });
+    expect(job).toBeNull();
   });
 });

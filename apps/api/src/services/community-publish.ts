@@ -19,6 +19,11 @@ import type { PublishFile } from "../lib/publication/types.js";
 import { storage } from "../lib/storage/index.js";
 import { dbJobQueue } from "./jobs.js";
 
+/** Off by default -- production datasets are meant to be public. Set to
+ * "true" only in an environment whose publication targets point at
+ * dev-only repos/orgs, so a test publish there never lands public. */
+const PUBLISH_PRIVATE = process.env.COMMUNITY_PUBLISH_PRIVATE === "true";
+
 export async function recordDatasetPublication(params: {
   bountyId: string;
   target: PublicationTarget;
@@ -802,7 +807,7 @@ export async function runCommunityPublishJob(bountyId: string): Promise<void> {
         repoId,
         files,
         commitMessage: `Publish ${bounty.title}`,
-        private: false,
+        private: PUBLISH_PRIVATE,
       });
       await prisma.$transaction(async (tx) => {
         const current = await tx.datasetPublication.findUnique({

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { Bounty, DatasetCategory } from "@/lib/types";
-import { num } from "@/lib/format";
+import { num, completionPct } from "@/lib/format";
 
 /* ---------- terminal-style label helpers ---------- */
 
@@ -98,12 +98,7 @@ export function validatorReviewCount(pool: Bounty): number | undefined {
 export function PoolCard({ pool }: { pool: Bounty }) {
   const progressItems =
     pool.communityProgress?.capacityReserved ?? pool.clearedItems ?? pool.acceptedItems;
-  const pctVal =
-    pool.targetItems === 0
-      ? 0
-      : progressItems >= pool.targetItems
-        ? 100
-        : Math.min(99, Math.round((progressItems / pool.targetItems) * 100));
+  const pctVal = completionPct(progressItems, pool.targetItems);
 
   return (
     <Link

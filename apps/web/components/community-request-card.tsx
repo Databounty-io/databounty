@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Icon } from "@/components/icons";
 import { Button, InfoTip, InlineStat, Pill, Progress } from "@/components/ui";
-import { humanizeKey, karmaPerItemLabel, pct } from "@/lib/format";
+import { humanizeKey, karmaPerItemLabel, pct, completionPct } from "@/lib/format";
 import { FunnelCounts } from "@/components/funnel-counts";
 import { communityLicenseLabel, PUBLICATION_STATUS_HELP, REQUEST_STATUS_HELP, STATUS_TONE, statusLabel, type DatasetRequestFull, type MintedBounty } from "@/components/dataset-request-detail";
 import { PublicationStatus } from "@/components/publication-status";
@@ -24,7 +24,7 @@ function MintedProgress({ mb }: { mb: MintedBounty }) {
   if (mb.status !== "active") return null;
   const accepted = mb.acceptedItems ?? 0;
   const target = mb.targetItems ?? 0;
-  const percent = target > 0 ? Math.round((accepted / target) * 100) : 0;
+  const percent = completionPct(accepted, target);
   const karmaReleased = mb.karmaReleasedTotal ?? null;
   const karmaSecured = mb.karmaSecuredTotal ?? 0;
   const karmaTarget = mb.karmaPerAcceptedItem ? target * mb.karmaPerAcceptedItem : null;

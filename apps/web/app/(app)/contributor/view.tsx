@@ -30,6 +30,7 @@ import {
   humanizeKey,
   karmaPerItemLabel,
   num,
+  completionPct,
   CONTRIBUTOR_RANKS,
 } from "@/lib/format";
 import { useCommunityKarma } from "@/lib/use-community-karma";
@@ -565,7 +566,7 @@ export function ContributorView() {
               // simultaneously rejecting submissions for. Falls back to
               // `accepted` only for an API old enough not to send the field.
               const cleared = pool.poolSummary?.capacityReserved ?? (pool.clearedItems == null ? accepted : Number(pool.clearedItems) || 0);
-              const pct = target > 0 ? Math.min(100, Math.round((cleared / target) * 100)) : 0;
+              const pct = completionPct(cleared, target);
               const perItem = pool.karmaPricing?.contributorPerItem ?? pool.karmaPerAcceptedItem;
               const upToTotal = pool.karmaPricing?.contributorTotal ?? pool.karmaPerAcceptedItem * target;
               const personalProgress = personalPoolProgressByBounty.get(pool.id);

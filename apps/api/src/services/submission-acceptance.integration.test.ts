@@ -53,6 +53,13 @@ async function seedPool(opts: {
   acceptedItems?: number;
   finalAcceptedItems?: number;
   statuses: Array<{ status: SubmissionStatus; count: number }>;
+  /** Seed the pool already closed (and optionally settled), to test reopen. */
+  poolClosedAt?: Date;
+  poolSamplingStartedAt?: Date;
+  poolSamplingCompletedAt?: Date;
+  disputeCycleWindowOpensAt?: Date;
+  disputeCycleSettledAt?: Date;
+  status?: BountyStatus;
 }): Promise<{ bountyId: string; contributorId: string }> {
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const contributor = await prisma.user.create({
@@ -64,7 +71,7 @@ async function seedPool(opts: {
     data: {
       requesterUserId: contributor.id,
       kind: BountyKind.community,
-      status: BountyStatus.active,
+      status: opts.status ?? BountyStatus.active,
       title: `counter-recount fixture ${suffix}`,
       description: "fixture pool for accepted-item counter recount",
       datasetCategory: DatasetCategory.debugging,
@@ -79,6 +86,11 @@ async function seedPool(opts: {
       auditCoveragePct: 20,
       holdDays: 0,
       karmaPerAcceptedItem: 25,
+      poolClosedAt: opts.poolClosedAt ?? null,
+      poolSamplingStartedAt: opts.poolSamplingStartedAt ?? null,
+      poolSamplingCompletedAt: opts.poolSamplingCompletedAt ?? null,
+      disputeCycleWindowOpensAt: opts.disputeCycleWindowOpensAt ?? null,
+      disputeCycleSettledAt: opts.disputeCycleSettledAt ?? null,
     },
   });
   createdBountyIds.push(bounty.id);
@@ -106,6 +118,7 @@ async function seedPool(opts: {
 
 const samplingJobs = (bountyId: string) => prisma.jobQueue.count({ where: { idempotencyKey: `pool-sample:${bountyId}` } });
 const closeLogs = (bountyId: string) => prisma.adminAuditLog.count({ where: { targetId: bountyId, action: "community_pool.closed" } });
+const reopenLogs = (bountyId: string) => prisma.adminAuditLog.count({ where: { targetId: bountyId, action: "community_pool.reopened" } });
 
 describe("recomputeAcceptedItemCounters", () => {
   it("(a) flagging a slot-holding in_audit item releases its slot; the pool stays open and a new item can claim it", async () => {
@@ -128,7 +141,7 @@ describe("recomputeAcceptedItemCounters", () => {
       return recomputeAcceptedItemCounters(tx, bountyId);
     });
 
-    expect(result).toEqual({ acceptedItems: 2, finalAcceptedItems: 2, poolJustClosed: false });
+    expect(result).toEqual({ acceptedItems: 2, finalAcceptedItems: 2, poolJustClosed: false, poolJustReopened: false });
 
     const afterFlag = await prisma.bounty.findUniqueOrThrow({ where: { id: bountyId } });
     expect(Number(afterFlag.acceptedItems)).toBe(2);
@@ -160,7 +173,7 @@ describe("recomputeAcceptedItemCounters", () => {
     });
 
     const first = await prisma.$transaction((tx) => recomputeAcceptedItemCounters(tx, bountyId));
-    expect(first).toEqual({ acceptedItems: 5, finalAcceptedItems: 3, poolJustClosed: true });
+    expect(first).toEqual({ acceptedItems: 5, finalAcceptedItems: 3, poolJustClosed: true, poolJustReopened: false });
 
     const closed = await prisma.bounty.findUniqueOrThrow({ where: { id: bountyId } });
     expect(closed.poolClosedAt).not.toBeNull();
@@ -177,7 +190,7 @@ describe("recomputeAcceptedItemCounters", () => {
     const repeats = await Promise.all(
       Array.from({ length: 4 }, () => prisma.$transaction((tx) => recomputeAcceptedItemCounters(tx, bountyId))),
     );
-    for (const r of repeats) expect(r).toEqual({ acceptedItems: 5, finalAcceptedItems: 3, poolJustClosed: false });
+    for (const r of repeats) expect(r).toEqual({ acceptedItems: 5, finalAcceptedItems: 3, poolJustClosed: false, poolJustReopened: false });
 
     const after = await prisma.bounty.findUniqueOrThrow({ where: { id: bountyId } });
     expect(after.poolClosedAt?.getTime()).toBe(closed.poolClosedAt?.getTime());
@@ -198,6 +211,105 @@ describe("recomputeAcceptedItemCounters", () => {
     expect(results.filter((r) => r.poolJustClosed)).toHaveLength(1);
     expect(await samplingJobs(bountyId)).toBe(1);
     expect(await closeLogs(bountyId)).toBe(1);
+  });
+
+  it("(d) reopens a genuinely closed pool when a slot-holding item is rejected after close, dropping capacity under target", async () => {
+    // Exactly the live production shape: a pool that reached 1000/1000, closed
+    // for real (poolClosedAt set, dispute clock started, sampling completed),
+    // then one of its accepted items was rejected in human audit — 999/1000.
+    const closedAt = new Date(Date.now() - 60_000);
+    const { bountyId } = await seedPool({
+      targetItems: 3,
+      acceptedItems: 3,
+      finalAcceptedItems: 3,
+      statuses: [{ status: SubmissionStatus.accepted, count: 2 }, { status: SubmissionStatus.in_audit, count: 1 }],
+      poolClosedAt: closedAt,
+      poolSamplingStartedAt: closedAt,
+      poolSamplingCompletedAt: closedAt,
+      disputeCycleWindowOpensAt: closedAt,
+    });
+    const inAudit = await prisma.submission.findFirstOrThrow({ where: { bountyId, status: SubmissionStatus.in_audit } });
+
+    // A validator rejects the sampled item post-close — same shape as the
+    // real audit-decision call site (services/audits.ts): status flip and
+    // recount in ONE transaction.
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.submission.update({ where: { id: inAudit.id }, data: { status: SubmissionStatus.rejected } });
+      return recomputeAcceptedItemCounters(tx, bountyId);
+    });
+    expect(result).toEqual({ acceptedItems: 2, finalAcceptedItems: 2, poolJustClosed: false, poolJustReopened: true });
+
+    const reopened = await prisma.bounty.findUniqueOrThrow({ where: { id: bountyId } });
+    expect(Number(reopened.acceptedItems)).toBe(2);
+    expect(reopened.poolClosedAt).toBeNull();
+    expect(reopened.disputeCycleWindowOpensAt).toBeNull();
+    expect(reopened.poolSamplingStartedAt).toBeNull();
+    expect(reopened.poolSamplingCompletedAt).toBeNull();
+    expect(reopened.status).toBe(BountyStatus.active);
+    expect(await reopenLogs(bountyId)).toBe(1);
+
+    // The pool is genuinely open again: the freed slot is claimable through
+    // the existing atomic gate, and it's listed for contributors again
+    // (listOpenPoolsForContributor filters on poolClosedAt: null).
+    expect(await prisma.$transaction((tx) => claimPoolAcceptanceSlot(tx, bountyId))).toBe(true);
+
+    // Idempotent: recounting an already-open, still-under-target pool again
+    // does not reopen a second time or write a second audit log row.
+    const again = await prisma.$transaction((tx) => recomputeAcceptedItemCounters(tx, bountyId));
+    expect(again.poolJustReopened).toBe(false);
+    expect(await reopenLogs(bountyId)).toBe(1);
+  });
+
+  it("(d') reopening a closed pool that had already auto-settled reverts status back to active and clears the settle clock", async () => {
+    const closedAt = new Date(Date.now() - 120_000);
+    const { bountyId } = await seedPool({
+      targetItems: 2,
+      acceptedItems: 2,
+      finalAcceptedItems: 2,
+      statuses: [{ status: SubmissionStatus.accepted, count: 1 }, { status: SubmissionStatus.in_audit, count: 1 }],
+      poolClosedAt: closedAt,
+      poolSamplingStartedAt: closedAt,
+      poolSamplingCompletedAt: closedAt,
+      disputeCycleWindowOpensAt: closedAt,
+      disputeCycleSettledAt: closedAt,
+      status: BountyStatus.completed,
+    });
+    const inAudit = await prisma.submission.findFirstOrThrow({ where: { bountyId, status: SubmissionStatus.in_audit } });
+
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.submission.update({ where: { id: inAudit.id }, data: { status: SubmissionStatus.flagged } });
+      return recomputeAcceptedItemCounters(tx, bountyId);
+    });
+    expect(result.poolJustReopened).toBe(true);
+
+    const reopened = await prisma.bounty.findUniqueOrThrow({ where: { id: bountyId } });
+    expect(reopened.status).toBe(BountyStatus.active);
+    expect(reopened.disputeCycleSettledAt).toBeNull();
+    expect(reopened.poolClosedAt).toBeNull();
+  });
+
+  it("(d'') leaves an admin-set status (disputed/paused/cancelled) untouched on reopen", async () => {
+    const closedAt = new Date(Date.now() - 60_000);
+    const { bountyId } = await seedPool({
+      targetItems: 2,
+      acceptedItems: 2,
+      finalAcceptedItems: 2,
+      statuses: [{ status: SubmissionStatus.accepted, count: 1 }, { status: SubmissionStatus.in_audit, count: 1 }],
+      poolClosedAt: closedAt,
+      disputeCycleWindowOpensAt: closedAt,
+      status: BountyStatus.disputed,
+    });
+    const inAudit = await prisma.submission.findFirstOrThrow({ where: { bountyId, status: SubmissionStatus.in_audit } });
+
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.submission.update({ where: { id: inAudit.id }, data: { status: SubmissionStatus.rejected } });
+      return recomputeAcceptedItemCounters(tx, bountyId);
+    });
+    expect(result.poolJustReopened).toBe(true);
+
+    const reopened = await prisma.bounty.findUniqueOrThrow({ where: { id: bountyId } });
+    expect(reopened.status).toBe(BountyStatus.disputed);
+    expect(reopened.poolClosedAt).toBeNull();
   });
 });
 

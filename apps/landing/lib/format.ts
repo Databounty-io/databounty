@@ -10,6 +10,18 @@ export function pct(n: number): string {
   return `${Math.round(n * 100)}%`;
 }
 
+/** Completion percentage for a "count reached a target" claim (pool capacity,
+ * karma-tier progress, etc.) — never `pct`, which rounds freely and would
+ * show "100%" for e.g. 1000/1002 (99.8%, plain `Math.round` pushes anything
+ * ≥99.5% up to 100). Only literal completion (`count >= target`) may claim
+ * 100; anything short is capped at 99 so the UI never claims something is
+ * done when it still needs more. */
+export function completionPct(count: number, target: number): number {
+  if (target <= 0) return 0;
+  if (count >= target) return 100;
+  return Math.min(99, Math.round((count / target) * 100));
+}
+
 export const CATEGORY_LABELS: Record<DatasetCategory, string> = {
   debugging: "Debugging / Bug Fix",
   implementation: "Function / Feature Implementation",

@@ -82,6 +82,11 @@ export const API = {
     submissions: (id: string) => `/v1/bounties/${id}/submissions`,
     submissionOne: (id: string, submissionId: string) => `/v1/bounties/${id}/submissions/${submissionId}`,
     sponsorReview: (id: string, submissionId: string) => `/v1/bounties/${id}/sponsor-review/${submissionId}`,
+    // Sponsor-initiated early close of an open community pool: stop
+    // accepting new contributions and settle with whatever was accepted so
+    // far, even under the original target. Idempotent — a second call is
+    // safe and returns 200 with `alreadyClosed: true` instead of erroring.
+    closePool: (id: string) => `/v1/bounties/${id}/close-pool`,
     // Direct, no-claim contribution to a community open pool
     // (COMMUNITY_OPEN_POOL_PLAN_V2) — distinct from batches.items below,
     // which requires a claimed ContributorBatch first.
