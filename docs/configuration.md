@@ -250,6 +250,7 @@ an audit event for the cap.
 | `GITHUB_PUBLICATION_BRANCH_PROTECTED` | unset (`false`) | When `true`, publish and unpublish push through a branch + pull request + merge instead of committing straight to `main`: create a branch from the built commit, open a PR (head: that branch, base: `main`), merge it via the API, then best-effort delete the branch. Default/unset keeps today's direct-push-to-`main` behavior unchanged. Turn this on only after the shared `databounty-datasets` repo actually has branch protection requiring PRs on `main` — setting this var does not itself enable that protection, request any GitHub permissions, or change the repo's settings; that is a separate owner action. |
 | `PUBLICATION_REQUEST_TIMEOUT_MS` | `10000` | Shared by both targets. |
 | `PUBLICATION_UPLOAD_TIMEOUT_MS` | `300000` | Per-file upload timeout. |
+| `COMMUNITY_PUBLISH_PRIVATE` | unset (`false`) | Off by default — production datasets are meant to be public. Set to `true` only in an environment whose `GITHUB_PUBLICATION_REPO`/`HUGGINGFACE_NAMESPACE` point at dev-only repos/orgs, so a test publish there never lands public. |
 
 **What lands in each repo**
 
