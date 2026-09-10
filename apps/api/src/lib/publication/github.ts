@@ -325,6 +325,54 @@ export class GitHubProvider implements PublicationProvider {
     slug: string,
     action: "Publish" | "Retract"
   ): Promise<void> {
+    // Best-effort cleanup of any branch+PR this same dataset left behind on a
+    // PRIOR failed attempt (e.g. the PR couldn't be created/merged and the
+    // job retried from scratch, per the unique-name-per-attempt design
+    // below). Without this, every retry piles up one more open PR and one
+    // more stale branch — harmless to `main`, but real operational debris
+    // that only grows the longer something stays broken (observed directly:
+    // repeated retries during a real credential outage left multiple
+    // abandoned `databounty-publish/<slug>-*` branches/PRs). Closing a PR
+    // that was already merged is a no-op GitHub rejects harmlessly; deleting
+    // an already-gone branch 404s harmlessly — both swallowed, since this
+    // must never fail the publish attempt that is actually in progress.
+    try {
+      // GitHub's `head` list filter needs an EXACT branch name — the
+      // timestamp+random suffix makes every attempt's name unique, so an
+      // exact filter would never match a prior attempt. List open PRs
+      // against `main` and filter client-side instead.
+      //
+      // `databounty-datasets` is a real public repo with PRs enabled
+      // (`has_pull_requests`, `pull_request_creation_policy: "all"`), so
+      // external contributors can open their own PRs there — this cleanup
+      // (and the merge call below) must NEVER touch anything this job did
+      // not itself create. Branch-name prefix alone is not enough: filter
+      // additionally on the PR's AUTHOR being this token's own account, so
+      // a coincidental branch-name collision from an external PR can never
+      // be closed or deleted by this job. The merge call two steps below is
+      // separately safe by construction — it only ever acts on `pr.number`,
+      // the PR this exact call just opened, never a listed/matched one.
+      const viewer = (await this.apiJson(`/user`)) as { login?: string };
+      const openPrs = (await this.apiJson(`/repos/${owner}/${repo}/pulls?state=open&base=main&per_page=100`)) as Array<{
+        number: number;
+        head?: { ref?: string };
+        user?: { login?: string };
+      }>;
+      const stalePrefix = `databounty-publish/${slug}-`;
+      const stale = (Array.isArray(openPrs) ? openPrs : []).filter(
+        (p) => p.head?.ref?.startsWith(stalePrefix) && viewer.login && p.user?.login === viewer.login
+      );
+      for (const p of stale) {
+        await this.request(`/repos/${owner}/${repo}/pulls/${p.number}`, { method: "PATCH", body: JSON.stringify({ state: "closed" }) }, [404, 422]).catch(() => undefined);
+        if (p.head?.ref) {
+          await this.request(`/repos/${owner}/${repo}/git/refs/heads/${p.head.ref}`, { method: "DELETE" }, [404, 422]).catch(() => undefined);
+        }
+      }
+    } catch {
+      // Listing itself failing (network blip, rate limit) must not block
+      // this attempt — the stale branch/PR just lingers one more cycle.
+    }
+
     const branch = `databounty-publish/${slug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     await this.apiJson(`/repos/${owner}/${repo}/git/refs`, {
