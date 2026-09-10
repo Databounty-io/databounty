@@ -8,10 +8,6 @@
 
 </div>
 
-<p align="center">
-  <img src="docs/assets/screenshots/landing-hero.png" alt="DataBounty Community landing page — 16 open dataset specs ready to claim, dedupe, sandboxed tests and LLM review before final acceptance releases karma" width="100%">
-</p>
-
 ---
 
 DataBounty Community is a self-hostable platform where sponsors request datasets, contributors create items,
