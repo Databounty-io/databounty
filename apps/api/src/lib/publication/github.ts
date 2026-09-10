@@ -11,6 +11,108 @@ import type {
   UnpublishDatasetResult,
 } from "./types.js";
 
+/** One row of the repo-root catalogue table — see `updateCatalogReadme`. */
+export interface CatalogReadmeRow {
+  title: string;
+  /** `datasets/<slug>` — same folder path `publishDataset` writes under. */
+  folder: string;
+  itemCount: number;
+  huggingFaceUrl: string | null;
+  pushedAt: Date;
+}
+
+/**
+ * Builds the FULL repo-root `README.md` from a code template (not by
+ * round-tripping the live file's markdown) — the static sections rarely
+ * change and a template is exact and diffable, where find-and-replace on
+ * fetched markdown would be fragile against manual edits or formatting
+ * drift. Keep this in sync with the live file's static prose if it is ever
+ * hand-edited; the "Published datasets" section below is the only part this
+ * function owns going forward.
+ */
+function buildCatalogReadme(rows: CatalogReadmeRow[], top: number, repoUrl: string): string {
+  const sorted = [...rows].sort((a, b) => b.pushedAt.getTime() - a.pushedAt.getTime());
+  const shown = sorted.slice(0, top);
+  const remaining = sorted.length - shown.length;
+  const lastUpdated = sorted[0] ? sorted[0].pushedAt.toISOString().slice(0, 10) : "—";
+
+  const tableRows = shown
+    .map(
+      (r) =>
+        `| ${r.title} | ${r.pushedAt.toISOString().slice(0, 10)} | ${r.itemCount.toLocaleString()} | [Browse files](${r.folder}/) | ${
+          r.huggingFaceUrl ? `[Open dataset](${r.huggingFaceUrl})` : "—"
+        } |`
+    )
+    .join("\n");
+
+  const moreLine =
+    remaining > 0
+      ? `\n\n${remaining} more dataset${remaining === 1 ? "" : "s"} not shown above (newest ${top} listed here) — ` +
+        `browse the full catalogue in [\`datasets/\`](${repoUrl}/tree/main/datasets).`
+      : "";
+
+  const tableSection = sorted.length
+    ? `_Last updated: **${lastUpdated}** (UTC) · ${sorted.length} dataset${sorted.length === 1 ? "" : "s"} published, newest first._\n\n` +
+      `| Dataset | Published | Released contributor items | GitHub | Hugging Face |\n` +
+      `|---|---|---:|---|---|\n` +
+      `${tableRows}${moreLine}`
+    : "_No datasets published yet._";
+
+  return `# DataBounty Datasets
+
+> Open, community-built coding datasets — released with clear provenance, licensing, and contributor credit.
+
+[DataBounty](https://databounty.io) is a community programme for building useful datasets. This repository is the public GitHub catalogue for released dataset artifacts. For browsing and large-file tooling, each release is also available on [Hugging Face](https://huggingface.co/databounty-io).
+
+## What is published
+
+Every dataset folder contains only the artifacts approved for that release:
+
+- accepted contributor items;
+- a human-readable dataset card;
+- a machine-readable manifest with counts, provenance, licence, and attribution metadata; and
+- the dataset's licence text when it is bundled.
+
+Sponsor reference material, unpublished submissions, review evidence, credentials, personal data, and application code are never published here.
+
+## Published datasets
+
+${tableSection}
+
+## Repository layout
+
+\`\`\`text
+datasets/
+  <dataset-slug>/
+    README.md          Purpose, scope, source notes, and contributor credits
+    data/items.jsonl   One accepted contributor item per line
+    manifest.json      Release metadata, counts, provenance, and integrity fields
+    LICENSE            Licence for this dataset, where bundled
+\`\`\`
+
+### Using a release
+
+- Read the dataset folder's \`README.md\` before use; its stated licence and scope apply to that release.
+- Use \`data/items.jsonl\` as the released item stream. Each line is one JSON object.
+- Treat \`manifest.json\` as the authoritative machine-readable release record. It records the accepted-item count, dataset contract, contributor-credit policy, licence, and release metadata.
+- Use the matching Hugging Face dataset for common dataset-tooling workflows and larger-file access.
+
+## Release and correction policy
+
+DataBounty publishes only release-approved community artifacts. A release is folder-scoped: adding, correcting, or retracting one dataset never replaces another dataset's files.
+
+If you find a metadata error, licensing concern, broken link, or need to request a correction or withdrawal, please [open an issue](${repoUrl}/issues/new) without including credentials, private data, or unpublished material.
+
+Contributions are submitted and reviewed through [DataBounty](https://databounty.io), not through pull requests to this catalogue repository.
+
+## Security and privacy boundary
+
+This repository is intentionally limited to released dataset artifacts. Do not commit access tokens, application configuration, unpublished submissions, or personal data. Publication credentials are held only by DataBounty's deployment secret manager.
+
+Questions about a release or this catalogue: [support@databounty.io](mailto:support@databounty.io).
+`;
+}
+
 /**
  * Env-driven config for this provider only — see the matching comment in
  * `hugging-face.ts` for why this reads `process.env` directly instead of a
@@ -151,7 +253,40 @@ export class GitHubProvider implements PublicationProvider {
     //    something a single dataset's publish job may flip on its own.
     await this.ensureRepo(owner, repo, input.private ?? false);
 
-    // 2) Current head and its tree — the base this publish overlays onto.
+    // One blob per file, paths rewritten under the dataset's folder — deleted
+    // paths (dropped from this run) are computed inside `commitFilesToMain`
+    // against whatever currently lives under that folder prefix.
+    const scopedFiles = input.files.map((f) => ({ ...f, path: `${folder}/${f.path}` }));
+    await this.commitFilesToMain(owner, repo, scopedFiles, `${folder}/`, input.commitMessage, slug);
+
+    return { repoId: input.repoId, url: `${this.siteOrigin()}/${owner}/${repo}/tree/main/${folder}` };
+  }
+
+  /**
+   * Shared blob→tree→commit→land pipeline used by both a dataset's own
+   * publish (`publishDataset`, folder-scoped) and the repo-root catalogue
+   * README refresh (`updateCatalogReadme`, unscoped — `deletionPrefix: null`
+   * touches only the exact paths in `files`, nothing else). Extracted once
+   * both needed the identical "read current head → diff a path scope →
+   * blob/tree/commit → land" sequence, so there is exactly one place that
+   * builds a GitHub commit in this adapter, not two copies to keep in sync.
+   *
+   * `deletionPrefix`: when set, every existing blob under that prefix not
+   * present in `files` this run is explicitly deleted (a `base_tree` overlay
+   * otherwise leaves "unmentioned" paths unchanged, not removed) — this is
+   * `publishDataset`'s per-folder behavior. `null` means "touch only the
+   * given files, never delete anything else" — the README refresh's only
+   * concern is the one root file it was given.
+   */
+  private async commitFilesToMain(
+    owner: string,
+    repo: string,
+    files: PublishFile[],
+    deletionPrefix: string | null,
+    commitMessage: string,
+    landSlug: string
+  ): Promise<void> {
+    // Current head and its tree — the base this commit overlays onto.
     const ref = (await this.apiJson(`/repos/${owner}/${repo}/git/ref/heads/main`)) as {
       object?: { sha?: string };
     };
@@ -167,47 +302,71 @@ export class GitHubProvider implements PublicationProvider {
       throw new PublicationError(`GitHub commit ${parentSha} in ${owner}/${repo} has no tree.`, false);
     }
 
-    // 3) Every path currently under this dataset's folder, so a file dropped
-    //    from this run (a dispute upheld, an attachment withdrawn) can be
-    //    explicitly deleted rather than merely left unmentioned — with a
-    //    `base_tree` overlay, "unmentioned" means "unchanged", not "removed".
-    const existing = (await this.apiJson(`/repos/${owner}/${repo}/git/trees/${baseTreeSha}?recursive=1`)) as {
-      tree?: Array<{ path: string; type: string }>;
-    };
-    const existingFolderPaths = new Set(
-      (existing.tree ?? []).filter((e) => e.type === "blob" && e.path.startsWith(`${folder}/`)).map((e) => e.path)
-    );
-
-    // 4) One blob per file (paths rewritten under the dataset's folder), then
-    //    one tree: the new/updated entries plus an explicit deletion entry
-    //    (`sha: null`) for every previously-published path this run dropped.
-    const scopedFiles = input.files.map((f) => ({ ...f, path: `${folder}/${f.path}` }));
-    const tree = await this.createBlobs(owner, repo, scopedFiles);
-    const newPaths = new Set(tree.map((e) => e.path));
-    const deletions = [...existingFolderPaths]
-      .filter((p) => !newPaths.has(p))
-      .map((path) => ({ path, mode: FILE_MODE, type: "blob" as const, sha: null }));
+    const tree = await this.createBlobs(owner, repo, files);
+    let deletions: Array<{ path: string; mode: string; type: "blob"; sha: null }> = [];
+    if (deletionPrefix) {
+      const existing = (await this.apiJson(`/repos/${owner}/${repo}/git/trees/${baseTreeSha}?recursive=1`)) as {
+        tree?: Array<{ path: string; type: string }>;
+      };
+      const existingPaths = new Set(
+        (existing.tree ?? []).filter((e) => e.type === "blob" && e.path.startsWith(deletionPrefix)).map((e) => e.path)
+      );
+      const newPaths = new Set(tree.map((e) => e.path));
+      deletions = [...existingPaths]
+        .filter((p) => !newPaths.has(p))
+        .map((path) => ({ path, mode: FILE_MODE, type: "blob" as const, sha: null }));
+    }
 
     const created = (await this.apiJson(`/repos/${owner}/${repo}/git/trees`, {
       method: "POST",
       body: JSON.stringify({ base_tree: baseTreeSha, tree: [...tree, ...deletions] }),
     })) as { sha?: string };
-    if (!created.sha) throw new PublicationError(`GitHub returned no tree sha for ${owner}/${repo}/${folder}.`, false);
+    if (!created.sha) throw new PublicationError(`GitHub returned no tree sha for ${owner}/${repo} (${landSlug}).`, false);
 
-    // 5) The commit, then advance `main` only if it still descends from the
-    //    parent read in step 2. A concurrent dataset publish may have moved the
-    //    ref meanwhile; force-updating here would erase that winner's folder.
-    //    `advanceMain` turns the non-fast-forward response into a transient
-    //    error so the job retries from the new shared-repo head instead.
+    // The commit, then advance `main` only if it still descends from the
+    // parent read above. A concurrent commit may have moved the ref
+    // meanwhile; force-updating here would erase that winner's change.
+    // `advanceMain` turns the non-fast-forward response into a transient
+    // error so the caller retries from the new shared-repo head instead.
     const commit = (await this.apiJson(`/repos/${owner}/${repo}/git/commits`, {
       method: "POST",
-      body: JSON.stringify({ message: input.commitMessage, tree: created.sha, parents: [parentSha] }),
+      body: JSON.stringify({ message: commitMessage, tree: created.sha, parents: [parentSha] }),
     })) as { sha?: string };
-    if (!commit.sha) throw new PublicationError(`GitHub returned no commit sha for ${owner}/${repo}/${folder}.`, false);
+    if (!commit.sha) throw new PublicationError(`GitHub returned no commit sha for ${owner}/${repo} (${landSlug}).`, false);
 
-    await this.landCommit(owner, repo, commit.sha, slug, "Publish");
+    await this.landCommit(owner, repo, commit.sha, landSlug, "Publish");
+  }
 
-    return { repoId: input.repoId, url: `${this.siteOrigin()}/${owner}/${repo}/tree/main/${folder}` };
+  /**
+   * Refresh the repo-root `README.md`'s dynamic "Published datasets" table so
+   * it reflects reality without a human ever hand-editing it — added
+   * 2026-09-10 after the table was found stale in prod (two real published
+   * datasets missing, because nothing had ever written to this file: every
+   * commit path up to this point only ever touched `datasets/<slug>/*`).
+   * Called best-effort after a dataset's own publish/retract succeeds
+   * (`community-publish.ts`) — a failure here must never undo or fail that
+   * publish, since the dataset itself already genuinely landed.
+   *
+   * `rows` is the FULL current catalogue (every github-published dataset),
+   * already sorted newest-first by the caller (source of truth is
+   * `DatasetPublication.pushedAt`, not this file). Only the `top` most recent
+   * are listed inline; the rest are reachable via the existing `datasets/`
+   * folder listing on GitHub itself — no separate index page to keep in
+   * sync, no broken links possible, it just IS the full list.
+   */
+  async updateCatalogReadme(rows: CatalogReadmeRow[], top = 10): Promise<void> {
+    if (!GITHUB_TOKEN || !GITHUB_OWNER) return; // best-effort; not configured yet is not an error here
+    const owner = GITHUB_OWNER;
+    const repo = GITHUB_DATASETS_REPO;
+    const content = buildCatalogReadme(rows, top, `${this.siteOrigin()}/${owner}/${repo}`);
+    await this.commitFilesToMain(
+      owner,
+      repo,
+      [{ path: "README.md", content: Buffer.from(content, "utf-8") }],
+      null,
+      "Update published datasets catalogue",
+      "catalogue-readme"
+    );
   }
 
   /**

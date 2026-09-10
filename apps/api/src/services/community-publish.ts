@@ -12,7 +12,9 @@ import {
   defaultNamespaceForTarget,
   huggingFaceLicenseTag,
   publicationProvider,
+  GitHubProvider,
   type PublicationTargetName,
+  type CatalogReadmeRow,
 } from "../lib/publication/index.js";
 import { datasetLicense } from "../lib/publication/license-texts.js";
 import type { PublishFile } from "../lib/publication/types.js";
@@ -682,6 +684,62 @@ async function markTargetNotConfigured(bountyId: string, target: PublicationTarg
  * without burning the retry budget — this is the same distinction
  * `errors.ts` exists for.
  */
+/**
+ * Refresh the shared `databounty-datasets` repo's root `README.md` catalogue
+ * table from the real, current set of published GitHub datasets — added
+ * 2026-09-10 after the table was found stale in prod (two genuinely
+ * published datasets missing from it; nothing had ever written to this file
+ * before, only to each dataset's own `datasets/<slug>/*`). Called best-effort
+ * right after a GitHub target publish succeeds, from the loop below — never
+ * allowed to fail or retry the dataset's own publish, which already landed.
+ */
+async function refreshGithubCatalogReadme(): Promise<void> {
+  try {
+    const githubRows = await prisma.datasetPublication.findMany({
+      where: { target: PublicationTarget.github, status: CommunityPublicationStatus.published, url: { not: null }, pushedAt: { not: null } },
+      select: { bountyId: true, url: true, pushedAt: true, bounty: { select: { title: true, finalAcceptedItems: true } } },
+    });
+    if (githubRows.length === 0) return;
+
+    const hfRows = await prisma.datasetPublication.findMany({
+      where: {
+        target: PublicationTarget.huggingface,
+        status: CommunityPublicationStatus.published,
+        bountyId: { in: githubRows.map((r) => r.bountyId) },
+      },
+      select: { bountyId: true, url: true },
+    });
+    const hfUrlByBounty = new Map(hfRows.map((r) => [r.bountyId, r.url]));
+
+    // `url` is "<origin>/<owner>/<repo>/tree/main/datasets/<slug>" — the
+    // README links relative to the repo root, so only the part after
+    // "/tree/main/" is needed, never re-derived from the slug (this file's
+    // own URL is the confirmed-published record, per the field's own
+    // schema comment: "written ONLY from a confirmed provider response").
+    const marker = "/tree/main/";
+    const rows: CatalogReadmeRow[] = githubRows
+      .map((r): CatalogReadmeRow | null => {
+        const idx = r.url!.indexOf(marker);
+        if (idx < 0) return null;
+        return {
+          title: r.bounty.title,
+          folder: r.url!.slice(idx + marker.length),
+          itemCount: Number(r.bounty.finalAcceptedItems),
+          huggingFaceUrl: hfUrlByBounty.get(r.bountyId) ?? null,
+          pushedAt: r.pushedAt!,
+        };
+      })
+      .filter((r): r is CatalogReadmeRow => r !== null);
+
+    await new GitHubProvider().updateCatalogReadme(rows);
+  } catch {
+    // Best-effort only. A refresh failure here (network blip, rate limit, a
+    // stale main ref that the next successful publish's own commit will pick
+    // up against anyway) must never be reported as THIS dataset's publish
+    // failing — that publish already genuinely landed by the time this runs.
+  }
+}
+
 export async function runCommunityPublishJob(bountyId: string): Promise<void> {
   const bounty = await prisma.bounty.findUnique({ where: { id: bountyId }, select: PUBLISH_BOUNTY_SELECT });
   if (!bounty) return; // deleted/missing — ack, nothing to do
@@ -831,6 +889,7 @@ export async function runCommunityPublishJob(bountyId: string): Promise<void> {
         });
       });
       if (targetName === "huggingface") publishedHuggingFace = result;
+      if (targetName === "github") await refreshGithubCatalogReadme();
     } catch (error) {
       if (error instanceof PublicationError && error.permanent) {
         await markTargetFailed(bountyId, target, error.message);
@@ -942,6 +1001,7 @@ export async function runCommunityUnpublishJob(bountyId: string): Promise<void> 
           metadata: { target: row.target, repoId: result.repoId, mode: result.mode },
         });
       });
+      if (row.target === PublicationTarget.github) await refreshGithubCatalogReadme();
       retracted += 1;
     } catch (error) {
       if (error instanceof PublicationError && error.permanent) {
