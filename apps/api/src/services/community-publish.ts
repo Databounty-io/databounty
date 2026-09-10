@@ -13,6 +13,7 @@ import {
   huggingFaceLicenseTag,
   publicationProvider,
   GitHubProvider,
+  HuggingFaceProvider,
   type PublicationTargetName,
   type CatalogReadmeRow,
 } from "../lib/publication/index.js";
@@ -740,6 +741,39 @@ async function refreshGithubCatalogReadme(): Promise<void> {
   }
 }
 
+/**
+ * Refresh the org's Hugging Face profile card (`<namespace>/README`) the same
+ * way `refreshGithubCatalogReadme` refreshes the GitHub repo README — added
+ * 2026-09-10 after the SAME staleness bug was found on this card too (a
+ * hand-written "3 public datasets / 3,000 items" summary and a 3-row table
+ * missing 2 real published datasets — this card had a hand-written per-row
+ * description with no automatic source, which `updateOrgProfileCard`
+ * deliberately drops in favor of the same real-data columns GitHub's table
+ * uses). Called best-effort right after a Hugging Face target publish
+ * succeeds; never allowed to fail or retry the dataset's own publish.
+ */
+async function refreshHuggingFaceOrgCard(): Promise<void> {
+  try {
+    const hfRows = await prisma.datasetPublication.findMany({
+      where: { target: PublicationTarget.huggingface, status: CommunityPublicationStatus.published, url: { not: null }, pushedAt: { not: null } },
+      select: { url: true, pushedAt: true, bounty: { select: { title: true, finalAcceptedItems: true } } },
+    });
+    if (hfRows.length === 0) return;
+
+    const rows: CatalogReadmeRow[] = hfRows.map((r) => ({
+      title: r.bounty.title,
+      folder: "", // unused for the HF card — every link comes from huggingFaceUrl
+      itemCount: Number(r.bounty.finalAcceptedItems),
+      huggingFaceUrl: r.url,
+      pushedAt: r.pushedAt!,
+    }));
+
+    await new HuggingFaceProvider().updateOrgProfileCard(rows);
+  } catch {
+    // Best-effort only — see refreshGithubCatalogReadme's identical note.
+  }
+}
+
 export async function runCommunityPublishJob(bountyId: string): Promise<void> {
   const bounty = await prisma.bounty.findUnique({ where: { id: bountyId }, select: PUBLISH_BOUNTY_SELECT });
   if (!bounty) return; // deleted/missing — ack, nothing to do
@@ -888,7 +922,10 @@ export async function runCommunityPublishJob(bountyId: string): Promise<void> {
           metadata: { target, url: result.url, files: files.length, acceptedItems: count },
         });
       });
-      if (targetName === "huggingface") publishedHuggingFace = result;
+      if (targetName === "huggingface") {
+        publishedHuggingFace = result;
+        await refreshHuggingFaceOrgCard();
+      }
       if (targetName === "github") await refreshGithubCatalogReadme();
     } catch (error) {
       if (error instanceof PublicationError && error.permanent) {
@@ -1002,6 +1039,7 @@ export async function runCommunityUnpublishJob(bountyId: string): Promise<void> 
         });
       });
       if (row.target === PublicationTarget.github) await refreshGithubCatalogReadme();
+      if (row.target === PublicationTarget.huggingface) await refreshHuggingFaceOrgCard();
       retracted += 1;
     } catch (error) {
       if (error instanceof PublicationError && error.permanent) {

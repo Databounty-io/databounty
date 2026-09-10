@@ -14,6 +14,25 @@ export interface DatasetStats {
   downloads: number | null;
 }
 
+/**
+ * One row of a provider's auto-generated "published datasets" catalogue
+ * table — shared between GitHub's repo-root README and Hugging Face's org
+ * profile card (`updateCatalogReadme` / `updateOrgProfileCard`) so both stay
+ * in the same real-data-driven format rather than drifting into two
+ * different hand-maintained tables (which is exactly how both went stale in
+ * prod before 2026-09-10: neither had any code path writing to it).
+ */
+export interface CatalogReadmeRow {
+  title: string;
+  /** GitHub: `datasets/<slug>` (relative to repo root). HF: the dataset's
+   * public URL (`huggingFaceUrl` below is reused for GitHub; this field
+   * holds whichever destination-specific link the row is FOR). */
+  folder: string;
+  itemCount: number;
+  huggingFaceUrl: string | null;
+  pushedAt: Date;
+}
+
 /** One file to include in a dataset publication. `content` is the raw bytes;
  * text files (JSONL, README) are just UTF-8 buffers. */
 export interface PublishFile {

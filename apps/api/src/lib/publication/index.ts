@@ -6,7 +6,7 @@ import type { PublicationProvider } from "./types.js";
 
 export type { DatasetStats, PublicationProvider } from "./types.js";
 export { PublicationError, isPermanentStatus } from "./errors.js";
-export { HuggingFacePublishError, huggingFaceLicenseTag, huggingFaceDefaultNamespace } from "./hugging-face.js";
+export { HuggingFacePublishError, HuggingFaceProvider, huggingFaceLicenseTag, huggingFaceDefaultNamespace } from "./hugging-face.js";
 export { gitHubDefaultOwner, GitHubProvider, type CatalogReadmeRow } from "./github.js";
 
 const HF_API_URL = process.env.HUGGINGFACE_API_URL ?? "https://huggingface.co/api";

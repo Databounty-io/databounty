@@ -10,6 +10,7 @@ import type {
   PublishDatasetResult,
   UnpublishDatasetInput,
   UnpublishDatasetResult,
+  CatalogReadmeRow,
 } from "./types.js";
 
 /**
@@ -84,6 +85,89 @@ export function huggingFaceLicenseTag(raw: string | null | undefined): string | 
     "odc-by", "odbl", "other", "unknown",
   ]);
   return known.has(normalized) ? normalized : null;
+}
+
+/**
+ * Builds the FULL org profile card (`<namespace>/README`'s `README.md`) from
+ * a code template — same reasoning as GitHub's `buildCatalogReadme`: the
+ * static sections (banner, mission copy, workflow explainer) rarely change
+ * and a template is exact, where round-tripping the live file would be
+ * fragile against manual edits. Only the stats line and the "Featured
+ * datasets" table are regenerated here every call; everything else must stay
+ * byte-identical to what's live unless a human deliberately changes the copy
+ * in this function.
+ */
+function buildOrgProfileCard(rows: CatalogReadmeRow[], top: number): string {
+  const sorted = [...rows].sort((a, b) => b.pushedAt.getTime() - a.pushedAt.getTime());
+  const shown = sorted.slice(0, top);
+  const remaining = sorted.length - shown.length;
+  const totalItems = sorted.reduce((sum, r) => sum + r.itemCount, 0);
+
+  const tableRows = shown
+    .map(
+      (r) =>
+        `| ${r.title} | ${r.pushedAt.toISOString().slice(0, 10)} | ${r.itemCount.toLocaleString()} | ${
+          r.huggingFaceUrl ? `[Dataset](${r.huggingFaceUrl})` : "—"
+        } |`
+    )
+    .join("\n");
+
+  const moreLine =
+    remaining > 0
+      ? `\n\n${remaining} more dataset${remaining === 1 ? "" : "s"} not shown above (newest ${top} listed here) — ` +
+        `see the full list under [Datasets](https://huggingface.co/${HF_NAMESPACE}) on this org page.`
+      : "";
+
+  const featuredSection = sorted.length
+    ? `| Dataset | Published | Items | Open it |\n` +
+      `|---|---|---:|---|\n` +
+      `${tableRows}${moreLine}`
+    : "_No datasets published yet._";
+
+  return `---
+title: DataBounty
+emoji: 🧭
+colorFrom: green
+colorTo: blue
+sdk: static
+pinned: false
+---
+
+![DataBounty — open datasets, community built](https://raw.githubusercontent.com/Databounty-io/.github/main/profile/banner.svg)
+
+# Dataset infrastructure for community-built AI data
+
+DataBounty turns a real data gap into a traceable, release-ready public dataset. A sponsor defines an open specification, contributors create the items, validators make the release decision, and the finished corpus is published with its licence, provenance, and contributor credit.
+
+| ${sorted.length} public dataset${sorted.length === 1 ? "" : "s"} | ${totalItems.toLocaleString()} released items | CC BY 4.0 releases |
+|---:|---:|---:|
+
+[Explore DataBounty](https://databounty.io) · [Open the console](https://console.databounty.io) · [GitHub](https://github.com/Databounty-io) · [Contact support](mailto:support@databounty.io)
+
+## Recent updates
+
+- **Public-release navigation:** featured releases link back to the public DataBounty organisation and their dataset cards.
+- **Clearer release evidence:** releases document their scope, licence, provenance metadata, contributor credit, and machine-readable manifest.
+- **One visible workflow:** DataBounty connects an open data need to community contributions, validation, and a reusable public release.
+
+## From a data gap to a public release
+
+\`data gap → open work spec → community contributions → validation → published dataset\`
+
+The public site shows open specifications, validation activity, and released datasets. The [DataBounty console](https://console.databounty.io) is where people request a dataset, contribute to open pools, audit submissions, and follow the release process. Coding is live today; the platform is designed to extend to other expert-validated domains.
+
+## What every release includes
+
+- accepted items, a dataset card, and a machine-readable manifest;
+- licence, provenance metadata, and named contributor credit; and
+- a clear privacy boundary: sponsor references, unpublished submissions, reviewer evidence, credentials, and personal data are never public.
+
+## Featured datasets
+
+${featuredSection}
+
+Read each dataset card and licence before use. For corrections, withdrawal requests, or licensing questions, contact [support@databounty.io](mailto:support@databounty.io).
+`;
 }
 
 /**
@@ -277,6 +361,44 @@ export class HuggingFaceProvider implements PublicationProvider {
    * still yields a correct dataset web URL. */
   private siteOrigin(): string {
     return HF_API_URL.replace(/\/api\/?$/, "");
+  }
+
+  /**
+   * Refresh the org's public profile card — added 2026-09-10 after it was
+   * found stale in prod (missing 2 of 5 real published datasets, and a
+   * "3 public datasets / 3,000 released items" summary line that hadn't
+   * moved since the 3rd dataset published). An HF org's profile page is
+   * backed by a conventionally-named Space repo, `<namespace>/README`
+   * (confirmed live by inspecting the org page's own HTML — there is no
+   * documented public API for this, it is the same mechanism GitHub uses for
+   * a `.github/<org>` profile repo), committed to the exact same way any
+   * other Space's `README.md` is. Best-effort: called after a dataset's own
+   * HF publish/retract already succeeded, and a failure here must never
+   * undo or fail that.
+   *
+   * `rows` uses the SAME shape and newest-first/top-N contract as GitHub's
+   * `updateCatalogReadme` — kept in one visual format across both catalogues
+   * rather than the hand-written per-dataset description this card used to
+   * carry, which had no automatic source and was exactly why the table went
+   * stale (nothing could regenerate prose nobody had written yet).
+   */
+  async updateOrgProfileCard(rows: CatalogReadmeRow[], top = 10): Promise<void> {
+    if (!HF_TOKEN || !HF_NAMESPACE) return; // best-effort; not configured is not an error here
+    const repoId = `${HF_NAMESPACE}/README`;
+    const authHeader = { Authorization: `Bearer ${HF_TOKEN}` };
+    const content = buildOrgProfileCard(rows, top);
+    const lines = [
+      JSON.stringify({ key: "header", value: { summary: "Update published datasets table" } }),
+      JSON.stringify({
+        key: "file",
+        value: { path: "README.md", encoding: "base64", content: Buffer.from(content, "utf-8").toString("base64") },
+      }),
+    ];
+    await this.hubFetch(
+      `${HF_API_URL}/spaces/${repoId}/commit/main`,
+      { method: "POST", headers: { ...authHeader, "Content-Type": "application/x-ndjson" }, body: lines.join("\n") + "\n" },
+      []
+    );
   }
 
   /** fetch with a hard timeout. Non-2xx (except `okStatuses`, e.g. a 409 "repo

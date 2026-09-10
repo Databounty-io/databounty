@@ -1,0 +1,4 @@
+fileignoreconfig:
+- filename: apps/api/src/lib/publication/hugging-face.ts
+  checksum: 8dbf6b0a35a00cfa4772a08452cf00e523c4128f01d21cc1d8386a6cae1feda7
+version: "1.0"

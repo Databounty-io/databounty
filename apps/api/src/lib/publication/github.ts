@@ -9,17 +9,9 @@ import type {
   PublishDatasetResult,
   UnpublishDatasetInput,
   UnpublishDatasetResult,
+  CatalogReadmeRow,
 } from "./types.js";
-
-/** One row of the repo-root catalogue table — see `updateCatalogReadme`. */
-export interface CatalogReadmeRow {
-  title: string;
-  /** `datasets/<slug>` — same folder path `publishDataset` writes under. */
-  folder: string;
-  itemCount: number;
-  huggingFaceUrl: string | null;
-  pushedAt: Date;
-}
+export type { CatalogReadmeRow } from "./types.js";
 
 /**
  * Builds the FULL repo-root `README.md` from a code template (not by
