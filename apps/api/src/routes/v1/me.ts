@@ -11,7 +11,14 @@ import {
   suggestAvailableHandles,
 } from "../../services/public-handles.js";
 import { displayNameSchema } from "../../lib/display-name.js";
-import { getKarmaBreakdown, getKarmaHistory } from "../../services/karma.js";
+import {
+  getKarmaBreakdown,
+  getKarmaHistory,
+  getKarmaRules,
+  getKarmaMatrix,
+  acceptedItemKarmaForBounty,
+  effectiveTypePricing,
+} from "../../services/karma.js";
 import { getMemberAnalytics, weekStartsBetween, MIN_WEEKS, MAX_WEEKS, MAX_RANGE_WEEKS, DEFAULT_WEEKS, type AnalyticsWindow } from "../../services/analytics.js";
 import { getWatchPref, updateWatchPref } from "../../services/notifications.js";
 import { listApiKeys, issueApiKey, rotateApiKey, revokeApiKey } from "../../services/api-keys.js";
@@ -797,7 +804,7 @@ export async function meRoutes(app: FastifyInstance) {
   // consistent.
   app.get("/contributor-dashboard", { preHandler: requireAuth }, async (req, reply) => {
     const user = (req as FastifyRequest & { authedUser: AuthedUser }).authedUser;
-    const [batches, profileSummary] = await Promise.all([
+    const [batches, profileSummary, { rules: karmaRules }, { matrix: liveKarmaMatrix }] = await Promise.all([
       prisma.contributorBatch.findMany({
         where: { contributorUserId: user.id, status: { in: [...ACTIVE_CLAIM_STATUSES] } },
         include: {
@@ -808,7 +815,8 @@ export async function meRoutes(app: FastifyInstance) {
               datasetCategory: true,
               datasetTypeId: true,
               karmaPerAcceptedItem: true,
-              datasetType: { select: { name: true, domain: true } },
+              karmaQuote: true,
+              datasetType: { select: { name: true, domain: true, complexityScore: true, verificationUnits: true } },
               _count: { select: { batches: true } },
             },
           },
@@ -817,6 +825,8 @@ export async function meRoutes(app: FastifyInstance) {
         orderBy: { claimedAt: "desc" },
       }),
       getProfileSummary(user.id),
+      getKarmaRules(),
+      getKarmaMatrix(),
     ]);
 
     return reply.send({
@@ -836,7 +846,18 @@ export async function meRoutes(app: FastifyInstance) {
           itemCount: Number(batch.itemCount),
           submittedCount: batch.submittedCount,
           karmaPerAcceptedItem: batch.bounty.karmaPerAcceptedItem,
-          expectedReward: batch.bounty.karmaPerAcceptedItem * Number(batch.itemCount),
+          // Real per-item pricing rather than the raw `karmaPerAcceptedItem`
+          // column times item count: that column is 0 for every auto-priced
+          // pool, which previously projected an expected reward of $0 for a
+          // priced-category batch.
+          expectedReward:
+            acceptedItemKarmaForBounty(
+              batch.bounty.karmaPerAcceptedItem,
+              batch.difficulty,
+              batch.bounty.karmaQuote,
+              karmaRules,
+              effectiveTypePricing(batch.bounty.datasetTypeId, batch.bounty.datasetType, liveKarmaMatrix)
+            ).amount * Number(batch.itemCount),
           deadline: batch.deadline ? batch.deadline.toISOString() : null,
           status: batch.status,
           language: batch.bounty.language,
@@ -865,6 +886,7 @@ export async function meRoutes(app: FastifyInstance) {
           completedBatches: 0,
           pendingDecisions: 0,
           decidedItems: profileSummary.ranks.validator.auditsCompleted,
+          activeClaimedBatches: 0,
         },
       },
     });
@@ -923,6 +945,7 @@ export async function meRoutes(app: FastifyInstance) {
           completedBatches: myWork.completedBatches,
           pendingDecisions: myWork.pendingDecisions,
           decidedItems: rank?.auditsCompleted ?? 0,
+          activeClaimedBatches: myWork.activeClaimedBatches,
         },
       },
     });

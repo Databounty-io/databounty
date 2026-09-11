@@ -6,6 +6,7 @@ import { prisma } from "../../lib/prisma.js";
 import { requireRole, ADMIN_AND_MEMBER, ADMIN_AND_ABOVE_READONLY, type AuthedUser } from "../../lib/rbac.js";
 import { writeAuditLog } from "../../lib/audit-log.js";
 import { attestPublication, enqueueCommunityPublish, enqueueCommunityUnpublish } from "../../services/community-publish.js";
+import { isComplexityScore } from "../../lib/karma-matrix.js";
 import {
   BountyKind,
   BountyStatus,
@@ -18,7 +19,7 @@ import {
   PublicationTarget,
   SubmissionStatus,
 } from "@prisma/client";
-import { awardKarma, getKarmaRules, KARMA_RULES } from "../../services/karma.js";
+import { awardKarma, createBountyKarmaQuote, getKarmaRules, KARMA_RULES } from "../../services/karma.js";
 import { emitNewWorkMatches, notifyEvent } from "../../services/notifications.js";
 import { buildSampleGate } from "../../services/artifacts.js";
 import { canonicalLanguageFor } from "../../services/planner.js";
@@ -426,6 +427,14 @@ export async function adminCommunityRoutes(app: FastifyInstance) {
         preparedSampleAssets.length > 0 &&
         (await safeToWriteSampleAssetsFor(tx, request.datasetTypeId!, undefined, request.datasetType.sampleAssets));
 
+      // Freeze the pricing axes at mint time: the `unpriced_type` gate above
+      // already proved `complexityScore`/`verificationUnits` are present, so
+      // this cannot return null here. Stored on the bounty so a later admin
+      // edit to the dataset type or the live `karma.matrix` override never
+      // reprices work a contributor already started (see karma.ts's
+      // resolution-order comment above `BountyKarmaQuote`).
+      const karmaQuote = createBountyKarmaQuote(request.datasetType);
+
       const b = await tx.bounty.create({
         data: {
           requesterUserId: user.id,
@@ -462,6 +471,7 @@ export async function adminCommunityRoutes(app: FastifyInstance) {
           poolDifficulty: difficulty,
           status: BountyStatus.active,
           datasetTypeId: request.datasetTypeId,
+          karmaQuote: (karmaQuote ?? Prisma.JsonNull) as unknown as Prisma.InputJsonValue,
         },
       });
 
@@ -820,17 +830,12 @@ export async function adminCommunityRoutes(app: FastifyInstance) {
 
   const implementBody = z.object({ targetItems: z.number().int().min(1).max(1_000_000) });
 
-  /** "Active ⇒ priced" invariant, re-checked at mint time (belt-and-suspenders
-   * with the same-named gate admin-dataset-types.ts already enforces before a
-   * type can even reach `active`). Duplicated rather than imported to avoid a
-   * cross-file coupling on a file another session may be concurrently editing;
-   * it is a 6-line, unlikely-to-drift check. NULL is the deliberate "unpriced"
-   * sentinel (schema.prisma's DatasetType.complexityScore/verificationUnits
-   * comment) — never defaulted to a middle score. */
-  function isComplexityScore(value: unknown): value is number {
-    return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 4;
-  }
-
+  // "Active ⇒ priced" invariant, re-checked at mint time below via the
+  // canonical `isComplexityScore` (lib/karma-matrix.ts) — belt-and-suspenders
+  // with the same-named gate admin-dataset-types.ts already enforces before a
+  // type can even reach `active`. NULL is the deliberate "unpriced" sentinel
+  // (schema.prisma's DatasetType.complexityScore/verificationUnits comment)
+  // — never defaulted to a middle score.
   // POST /community/requests/:id/implement — mints exactly one zero-cash
   // community bounty from an approved request. Same core mechanics as
   // /dataset-requests/:id/mint above (title/description/license carried over
@@ -911,6 +916,11 @@ export async function adminCommunityRoutes(app: FastifyInstance) {
         request.datasetType.sampleAssets
       );
 
+      // Freeze the pricing axes at mint time — same reasoning as the sibling
+      // /dataset-requests/:id/mint route above; the `unpriced_type` gate
+      // already proved both axes are present.
+      const karmaQuote = createBountyKarmaQuote(request.datasetType);
+
       const b = await tx.bounty.create({
         data: {
           requesterUserId: user.id,
@@ -965,6 +975,7 @@ export async function adminCommunityRoutes(app: FastifyInstance) {
           status: BountyStatus.active,
           datasetTypeId: request.datasetType.id,
           datasetTypeVersion: request.datasetType.version,
+          karmaQuote: (karmaQuote ?? Prisma.JsonNull) as unknown as Prisma.InputJsonValue,
         },
       });
 

@@ -4,7 +4,19 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { PHASE_STATUSES, phaseSchema, queryBoolean, publicText, PUBLIC_DATASET_TYPE_SELECT, PUBLIC_HARNESS_SELECT } from "../../lib/public-query.js";
 import { prisma } from "../../lib/prisma.js";
-import { getKarmaBreakdown, getLeaderboard, resolveKarmaTier, getKarmaTiers } from "../../services/karma.js";
+import {
+  getKarmaBreakdown,
+  getLeaderboard,
+  resolveKarmaTier,
+  getKarmaTiers,
+  getKarmaRules,
+  getKarmaMatrix,
+  catalogPricingFacts,
+  karmaMatrixView,
+  itemsNeededPerTier,
+  acceptedItemKarmaForBounty,
+  effectiveTypePricing,
+} from "../../services/karma.js";
 import { getCommunityStats, getCommunityPool, listOpenPoolsForContributor, listCommunityCatalog, getCommunityCatalogDataset, listValidationQueuePools, InvalidCursorError } from "../../services/bounties.js";
 import { IN_REVIEW_SUBMISSION_STATUSES } from "../../services/profile-summary.js";
 import { getAdminSetting } from "../../services/admin-settings.js";
@@ -1186,7 +1198,7 @@ export async function communityRoutes(app: FastifyInstance) {
     // the member their real badge state.
     await syncAndListBadges(user.id);
 
-    const [breakdown, pendingAgg, reversedAgg, inReviewSubs, holdRows, disputeWindowHoursDefault, holdsEnabled, eventTypeGroups, viewerUser, badges, earnedBadgeRows, { tiers: liveTiers }] = await Promise.all([
+    const [breakdown, pendingAgg, reversedAgg, inReviewSubs, holdRows, disputeWindowHoursDefault, holdsEnabled, eventTypeGroups, viewerUser, badges, earnedBadgeRows, { tiers: liveTiers }, catalogFacts, { rules: karmaRules }, { matrix: liveKarmaMatrix }] = await Promise.all([
       getKarmaBreakdown(user.id),
       prisma.pendingKarmaAward.aggregate({
         where: { userId: user.id, releasedAt: null, reversedAt: null },
@@ -1198,7 +1210,17 @@ export async function communityRoutes(app: FastifyInstance) {
       }),
       prisma.submission.findMany({
         where: { contributorUserId: user.id, status: { in: [...IN_REVIEW_SUBMISSION_STATUSES] } },
-        select: { bounty: { select: { karmaPerAcceptedItem: true } } },
+        select: {
+          bounty: {
+            select: {
+              karmaPerAcceptedItem: true,
+              poolDifficulty: true,
+              karmaQuote: true,
+              datasetTypeId: true,
+              datasetType: { select: { complexityScore: true, verificationUnits: true } },
+            },
+          },
+        },
       }),
       prisma.pendingKarmaAward.findMany({
         where: { userId: user.id, releasedAt: null, reversedAt: null },
@@ -1225,6 +1247,9 @@ export async function communityRoutes(app: FastifyInstance) {
       listBadges(),
       prisma.userBadge.findMany({ where: { userId: user.id }, select: { badgeId: true } }),
       getKarmaTiers(),
+      catalogPricingFacts(),
+      getKarmaRules(),
+      getKarmaMatrix(),
     ]);
 
     if (!breakdown) return reply.notFound("User not found");
@@ -1290,7 +1315,11 @@ export async function communityRoutes(app: FastifyInstance) {
       {
         key: KarmaEventType.community_audit_completed,
         label: "Completed audit",
-        description: "Flat rate per item you audit as a validator.",
+        // Not always this flat rate any more: a priced dataset type pays the
+        // complexity x review-load matrix cell instead (see the pricing
+        // section above); `amount` here is only the fallback for an unpriced
+        // type, same caveat as `community_item_accepted`'s per-bounty rate.
+        description: "Per item you audit as a validator — the priced rate for that category, or this flat rate for an unpriced one.",
         amount: 8,
         perProgram: false,
       },
@@ -1303,7 +1332,35 @@ export async function communityRoutes(app: FastifyInstance) {
       },
     ];
 
-    const inReviewProjected = inReviewSubs.reduce((sum, s) => sum + (s.bounty?.karmaPerAcceptedItem ?? 0), 0);
+    // Real per-item pricing rather than the raw `karmaPerAcceptedItem` column:
+    // that column is 0 for every auto-priced pool (the matrix sentinel), which
+    // previously projected 0 karma for in-review work on any priced category.
+    const inReviewProjected = inReviewSubs.reduce((sum, s) => {
+      if (!s.bounty) return sum;
+      const typePricing = effectiveTypePricing(s.bounty.datasetTypeId, s.bounty.datasetType, liveKarmaMatrix);
+      const { amount } = acceptedItemKarmaForBounty(
+        s.bounty.karmaPerAcceptedItem,
+        s.bounty.poolDifficulty,
+        s.bounty.karmaQuote,
+        karmaRules,
+        typePricing
+      );
+      return sum + amount;
+    }, 0);
+
+    // Server-owned pricing render model (KARMA_PRICING_MATRIX_PLAN.md) for
+    // the member karma page's PricingSection/TierItemsSection — previously
+    // absent, so both sections had nothing to render. `example`/`catalogMaxKarma`
+    // come from a real, live-priced dataset type (`catalogPricingFacts`), never
+    // a hypothetical one.
+    const matrix = karmaMatrixView(undefined, catalogFacts.maxKarma, catalogFacts.example);
+    const tierItemEstimates = {
+      lowest: { karmaPerItem: matrix.lowestKarma, tiers: itemsNeededPerTier(matrix.lowestKarma, liveTiers) },
+      catalogHighest:
+        catalogFacts.maxKarma !== null
+          ? { karmaPerItem: catalogFacts.maxKarma, tiers: itemsNeededPerTier(catalogFacts.maxKarma, liveTiers) }
+          : null,
+    };
 
     // Group unresolved PendingKarmaAward rows by (bounty, role) — a bounty
     // could in principle carry both a contributor and a validator hold for
@@ -1401,6 +1458,8 @@ export async function communityRoutes(app: FastifyInstance) {
       eventCount: page.eventCount,
       eventTypeFilters,
       earnRules,
+      matrix,
+      tierItemEstimates,
       badgeCatalog,
       pendingTotal: pendingAgg._sum.amount ?? 0,
       reversedTotal: Math.abs(reversedAgg._sum.amount ?? 0),

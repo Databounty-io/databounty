@@ -7,6 +7,7 @@ import { prisma } from "../../lib/prisma.js";
 import { requireRole, ADMIN_AND_ABOVE_READONLY, ADMIN_AND_MEMBER, ADMIN_ONLY, type AuthedUser } from "../../lib/rbac.js";
 import { enqueueDomainLiveNotificationIfNewlyLive } from "../../services/jobs/waitlist-notify.js";
 import { writeAuditLog } from "../../lib/audit-log.js";
+import { isComplexityScore } from "../../lib/karma-matrix.js";
 
 /**
  * Admin dataset-type catalog surface backing community/apps/admin's /karma
@@ -209,10 +210,9 @@ export function contractIntegrityError(fieldsValue: unknown, verificationValue: 
  * therefore gated on contract integrity + karma pricing only, NOT on whether
  * a harness/sandbox actually exists for the `execution` stage. That gap
  * pre-dates this change (the prior PATCH had no activation gate at all).
+ * `isComplexityScore` is the canonical copy from lib/karma-matrix.ts (also
+ * used by routes/v1/admin-community.ts's mint-time re-check).
  */
-function isComplexityScore(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 4;
-}
 
 const MACHINE_VERIFYING_STAGES = ["execution", "llm"] as const;
 

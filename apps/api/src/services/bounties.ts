@@ -3,7 +3,8 @@
 import { BountyStatus, BountyKind, CommunityPublicationStatus, DatasetCategory, DomainId, ArtifactKind, SponsorExampleReviewStatus, SubmissionStatus, type Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { PUBLIC_DATASET_TYPE_SELECT } from "../lib/public-query.js";
-import { KARMA_RULES, getKarmaRules, getKarmaTiers, getLeaderboard } from "./karma.js";
+import { communityPricingSummary, effectiveTypePricing, getKarmaMatrix, getKarmaRules, getKarmaTiers, getLeaderboard } from "./karma.js";
+import type { KarmaMatrixConfig, KarmaRulesConfig } from "../lib/karma-matrix.js";
 import { buildPublicSamples, listBountyBriefArtifacts, serializeArtifact } from "./artifacts.js";
 import { llmValidationEnabled } from "./admin-settings.js";
 import { openRouterConfigured } from "./llm-client.js";
@@ -14,6 +15,41 @@ import { getPoolSubmitLimits } from "./submission-limits.js";
 import { getArtifactData } from "./storage.js";
 
 type DbClient = Prisma.TransactionClient | typeof prisma;
+
+/** Real per-pool karma pricing (KARMA_PRICING_MATRIX_PLAN.md), shared by the
+ * catalog serializer, the open-pool browse list, and the pool contract below
+ * so all three surfaces report the SAME number for the same pool rather than
+ * each computing their own broken approximation of it. Replaces the former
+ * `karmaPerAcceptedItem` / `KARMA_RULES.auditItem` pass-through, which quoted
+ * the `0` "auto-price this" sentinel as a literal karma amount and always
+ * quoted the flat audit rate regardless of the pool's dataset-type complexity. */
+function poolKarmaPricing(
+  bounty: {
+    karmaPerAcceptedItem: number;
+    poolDifficulty: string | null;
+    karmaQuote: unknown;
+    auditCoveragePct: number;
+    targetItems: number;
+    datasetTypeId: string | null;
+    datasetType: { complexityScore: number | null; verificationUnits: number | null; fields: unknown } | null;
+  },
+  rules: KarmaRulesConfig,
+  liveMatrix: KarmaMatrixConfig
+) {
+  const typePricing = effectiveTypePricing(bounty.datasetTypeId, bounty.datasetType, liveMatrix);
+  return communityPricingSummary(
+    {
+      karmaPerAcceptedItem: bounty.karmaPerAcceptedItem,
+      difficulty: bounty.poolDifficulty,
+      karmaQuote: bounty.karmaQuote,
+      targetItems: bounty.targetItems,
+      auditCoveragePct: bounty.auditCoveragePct,
+      typePricing,
+      fieldCount: Array.isArray(bounty.datasetType?.fields) ? bounty.datasetType!.fields.length : 0,
+    },
+    rules
+  );
+}
 
 export type PreparedSampleAsset = { fields: Record<string, string> };
 
@@ -358,6 +394,12 @@ const COMMUNITY_CATALOG_SELECT = {
   acceptedItems: true,
   finalAcceptedItems: true,
   karmaPerAcceptedItem: true,
+  // Real karma pricing (`poolKarmaPricing` below) needs the frozen quote plus
+  // the dataset type's own axes — without these the catalog serializer had no
+  // way to price a pool beyond the flat `karmaPerAcceptedItem` column and the
+  // flat `KARMA_RULES.auditItem` validator rate.
+  karmaQuote: true,
+  datasetTypeId: true,
   auditCoveragePct: true,
   communityLicense: true,
   communityLicenseUrl: true,
@@ -384,7 +426,18 @@ const COMMUNITY_CATALOG_SELECT = {
   // PUBLIC_DATASET_TYPE_SELECT, which has carried this field since it was
   // introduced). Same allowlist discipline: a field already public via that
   // select and via /v1/meta/public-catalog, not a new disclosure.
-  datasetType: { select: { id: true, name: true, domain: true, trustTier: true, sampleAssets: true } },
+  datasetType: {
+    select: {
+      id: true,
+      name: true,
+      domain: true,
+      trustTier: true,
+      sampleAssets: true,
+      complexityScore: true,
+      verificationUnits: true,
+      fields: true,
+    },
+  },
 } satisfies Prisma.BountySelect;
 
 type CommunityCatalogRow = Prisma.BountyGetPayload<{ select: typeof COMMUNITY_CATALOG_SELECT }>;
@@ -604,14 +657,22 @@ export function buildDatasetPublicationSummary(
   };
 }
 
-function serializeCommunityCatalogBounty(b: CommunityCatalogRow, rollup?: CommunityPoolRollup) {
+function serializeCommunityCatalogBounty(
+  b: CommunityCatalogRow,
+  pricingSettings: { rules: KarmaRulesConfig; liveMatrix: KarmaMatrixConfig },
+  rollup?: CommunityPoolRollup
+) {
   // BigInt columns must be converted before the reply is serialized: a raw
   // BigInt in the payload throws ("Do not know how to serialize a BigInt")
   // and turns the whole catalog into a 500 (V1 carries the same warning).
   const target = Number(b.targetItems);
   const cleared = Number(b.acceptedItems);
   const finalAccepted = Number(b.finalAcceptedItems);
-  const plannedAuditItems = Math.round((target * b.auditCoveragePct) / 100);
+  const pricing = poolKarmaPricing(
+    { ...b, targetItems: target },
+    pricingSettings.rules,
+    pricingSettings.liveMatrix
+  );
   return {
     id: b.id,
     // Every row is scoped to `kind: community` by the queries below, but the
@@ -633,11 +694,11 @@ function serializeCommunityCatalogBounty(b: CommunityCatalogRow, rollup?: Commun
     clearedItems: String(cleared),
     karmaPerAcceptedItem: b.karmaPerAcceptedItem,
     karmaPricing: {
-      contributorPerItem: b.karmaPerAcceptedItem,
-      contributorTotal: b.karmaPerAcceptedItem * target,
-      validatorPerAuditedItem: KARMA_RULES.auditItem,
-      plannedAuditItems,
-      validatorTotal: plannedAuditItems * KARMA_RULES.auditItem,
+      contributorPerItem: pricing.contributorPerItem,
+      contributorTotal: pricing.contributorTotal,
+      validatorPerAuditedItem: pricing.validatorPerAuditedItem,
+      plannedAuditItems: pricing.plannedAuditItems,
+      validatorTotal: pricing.validatorTotal,
     },
     auditCoveragePct: b.auditCoveragePct,
     communityLicense: b.communityLicense,
@@ -741,12 +802,15 @@ export async function listCommunityCatalog(params: {
 
   const hasMore = rows.length > take;
   const page = hasMore ? rows.slice(0, take) : rows;
-  const rollups = params.withPoolSummary
-    ? await communityPoolRollups(page.map((row) => row.id))
-    : undefined;
+  const [rollups, rules, { matrix: liveMatrix }] = await Promise.all([
+    params.withPoolSummary ? communityPoolRollups(page.map((row) => row.id)) : Promise.resolve(undefined),
+    getKarmaRules().then((r) => r.rules),
+    getKarmaMatrix(),
+  ]);
+  const pricingSettings = { rules, liveMatrix };
 
   return {
-    bounties: page.map((row) => serializeCommunityCatalogBounty(row, rollups?.get(row.id))),
+    bounties: page.map((row) => serializeCommunityCatalogBounty(row, pricingSettings, rollups?.get(row.id))),
     nextCursor: hasMore ? page[page.length - 1]?.id ?? null : null,
     total,
     limit: take,
@@ -777,8 +841,12 @@ export async function getCommunityCatalogDataset(id: string) {
   // unlike the list route, there's no per-page multiplier to gate behind
   // `withPoolSummary`. Without this, a pool's own permalink showed less
   // information (every count dashed out) than the card that linked to it.
-  const rollups = await communityPoolRollups([row.id]);
-  return serializeCommunityCatalogBounty(row, rollups.get(row.id));
+  const [rollups, rules, { matrix: liveMatrix }] = await Promise.all([
+    communityPoolRollups([row.id]),
+    getKarmaRules().then((r) => r.rules),
+    getKarmaMatrix(),
+  ]);
+  return serializeCommunityCatalogBounty(row, { rules, liveMatrix }, rollups.get(row.id));
 }
 
 function encodePoolsCursor(offset: number): string {
@@ -827,11 +895,11 @@ export async function listOpenPoolsForContributor(params: {
     ...(params.domain ? { datasetType: { domain: params.domain as never } } : {}),
   };
 
-  const [rows, datasetTypes] = await Promise.all([
+  const [rows, datasetTypes, rules, { matrix: liveMatrix }] = await Promise.all([
     prisma.bounty.findMany({
       where,
       include: {
-        datasetType: { select: { id: true, name: true, domain: true } },
+        datasetType: { select: { id: true, name: true, domain: true, complexityScore: true, verificationUnits: true, fields: true } },
       },
       orderBy: [{ createdAt: "desc" }, { id: "asc" }],
       take: take + 1,
@@ -853,6 +921,8 @@ export async function listOpenPoolsForContributor(params: {
       select: { id: true, name: true, domain: true },
       orderBy: [{ domain: "asc" }, { name: "asc" }],
     }),
+    getKarmaRules().then((r) => r.rules),
+    getKarmaMatrix(),
   ]);
   const hasMore = rows.length > take;
   const page = hasMore ? rows.slice(0, take) : rows;
@@ -861,18 +931,18 @@ export async function listOpenPoolsForContributor(params: {
     const target = Number(b.targetItems);
     const cleared = Number(b.acceptedItems);
     const finalAccepted = Number(b.finalAcceptedItems);
-    const plannedAuditItems = Math.round((target * b.auditCoveragePct) / 100);
+    const pricing = poolKarmaPricing({ ...b, targetItems: target }, rules, liveMatrix);
     return {
       id: b.id,
       title: b.title,
       datasetCategory: b.datasetCategory,
       karmaPerAcceptedItem: b.karmaPerAcceptedItem,
       karmaPricing: {
-        contributorPerItem: b.karmaPerAcceptedItem,
-        contributorTotal: b.karmaPerAcceptedItem * target,
-        validatorPerAuditedItem: KARMA_RULES.auditItem,
-        plannedAuditItems,
-        validatorTotal: plannedAuditItems * KARMA_RULES.auditItem,
+        contributorPerItem: pricing.contributorPerItem,
+        contributorTotal: pricing.contributorTotal,
+        validatorPerAuditedItem: pricing.validatorPerAuditedItem,
+        plannedAuditItems: pricing.plannedAuditItems,
+        validatorTotal: pricing.validatorTotal,
       },
       communityLicense: b.communityLicense,
       targetItems: String(target),
@@ -956,17 +1026,20 @@ export async function listValidationQueuePools(params?: {
     return { bounties: [], totals: { items: totalItems, pools: totalPools }, total: totalPools, limit: take, offset: skip };
   }
 
-  const [rows, rollups] = await Promise.all([
+  const [rows, rollups, rules, { matrix: liveMatrix }] = await Promise.all([
     prisma.bounty.findMany({ where: { id: { in: pageIds } }, select: COMMUNITY_CATALOG_SELECT }),
     communityPoolRollups(pageIds),
+    getKarmaRules().then((r) => r.rules),
+    getKarmaMatrix(),
   ]);
+  const pricingSettings = { rules, liveMatrix };
 
   // findMany does not honour the order of an `in` list; re-apply the queue
   // ordering so "deepest queue first" is true of what the caller renders.
   const order = new Map(pageIds.map((id, i) => [id, i]));
   const bounties = rows
     .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
-    .map((row) => serializeCommunityCatalogBounty(row, rollups.get(row.id)));
+    .map((row) => serializeCommunityCatalogBounty(row, pricingSettings, rollups.get(row.id)));
 
   return { bounties, totals: { items: totalItems, pools: totalPools }, total: totalPools, limit: take, offset: skip };
 }
@@ -1121,10 +1194,12 @@ export async function getPoolContractForBounty(bountyId: string, options?: { inc
   });
   if (!bounty || bounty.kind !== BountyKind.community || !bounty.datasetType) return null;
 
-  const [llmEnabled, sponsorReferences, submitLimits] = await Promise.all([
+  const [llmEnabled, sponsorReferences, submitLimits, rules, { matrix: liveMatrix }] = await Promise.all([
     llmValidationEnabled(),
     options?.includeSponsorReferences ? listBountyBriefArtifacts(bountyId) : Promise.resolve([]),
     getPoolSubmitLimits(),
+    getKarmaRules().then((r) => r.rules),
+    getKarmaMatrix(),
   ]);
   const target = Number(bounty.targetItems);
   const cleared = Number(bounty.acceptedItems);
@@ -1146,14 +1221,11 @@ export async function getPoolContractForBounty(bountyId: string, options?: { inc
     (counts.running_tests ?? 0) +
     (counts.llm_validation ?? 0);
 
-  // Derived from the live flat KARMA_RULES constant and this bounty's own
-  // snapshot fields — no versioned karma-pricing-matrix service is wired up
-  // yet, so `matrixVersion` stays null rather than claiming one.
-  const plannedAuditItems = Math.round((target * bounty.auditCoveragePct) / 100);
-  const contributorPerItem = bounty.karmaPerAcceptedItem;
-  const contributorTotal = contributorPerItem * target;
-  const validatorPerAuditedItem = KARMA_RULES.auditItem;
-  const validatorTotal = plannedAuditItems * validatorPerAuditedItem;
+  // Real per-item pricing (KARMA_PRICING_MATRIX_PLAN.md), shared with the
+  // catalog serializer and open-pool browse list via `poolKarmaPricing` so
+  // this contract, the card it was opened from, and the browse list can
+  // never disagree about what a pool actually pays.
+  const pricing = poolKarmaPricing({ ...bounty, targetItems: target }, rules, liveMatrix);
 
   const policy =
     bounty.communityValidationMode === "full_human" || bounty.communityValidationMode === "automation_only"
@@ -1170,15 +1242,15 @@ export async function getPoolContractForBounty(bountyId: string, options?: { inc
       framework: bounty.framework,
       karmaPerAcceptedItem: bounty.karmaPerAcceptedItem,
       karmaPricing: {
-        contributorPerItem,
-        contributorTotal,
-        validatorPerAuditedItem,
-        plannedAuditItems,
-        validatorTotal,
-        matrixVersion: null,
-        complexityScore: bounty.datasetType.complexityScore,
-        verificationUnits: bounty.datasetType.verificationUnits,
-        difficulty: bounty.poolDifficulty ?? "intermediate",
+        contributorPerItem: pricing.contributorPerItem,
+        contributorTotal: pricing.contributorTotal,
+        validatorPerAuditedItem: pricing.validatorPerAuditedItem,
+        plannedAuditItems: pricing.plannedAuditItems,
+        validatorTotal: pricing.validatorTotal,
+        matrixVersion: pricing.matrixVersion,
+        complexityScore: pricing.complexityScore,
+        verificationUnits: pricing.verificationUnits,
+        difficulty: pricing.difficulty,
       },
       targetItems: String(target),
       acceptedItems: String(finalAccepted),
@@ -1298,10 +1370,16 @@ export async function getCommunityStats() {
       concurrencyBonus: t.concurrencyBonus,
     })),
     leaderboard: leaderboard.map((l) => ({ rank: l.rank, handle: l.handle, displayName: l.displayName, karma: l.karma })),
-    // This deployment's real model is one flat rate per validated item
-    // (KARMA_RULES.auditItem / getKarmaRules().rules.auditItem), not a
-    // complexity matrix — `activeScale: "difficulty_scale"` is the shape the
-    // landing page already renders honestly for exactly that model.
+    // NOTE (post KARMA_PRICING_MATRIX_PLAN.md wiring): a priced dataset type
+    // now earns validator karma from the complexity x review-load ladder
+    // (`validatorAuditKarmaPerItem` in services/karma.ts), not this flat rate
+    // — `liveRules.auditItem` is only the fallback for an unpriced type. This
+    // landing-stats field was not part of that wiring pass and still reports
+    // a single global flat rate; it undercounts what a priced category's
+    // validators actually earn. Left as `difficulty_scale`/`flatRate` here
+    // (shape unchanged) — fixing it needs a real per-category breakdown, not
+    // a one-line change, and this endpoint's consumer type is owned by
+    // another surface (apps/landing).
     validatorKarma: { activeScale: "difficulty_scale" as const, flatRate: liveRules.auditItem },
   };
 }

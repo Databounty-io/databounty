@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { Icon } from "@/components/icons";
 import {
@@ -113,6 +114,7 @@ export default function ValidatorWorkspaceView() {
     taxonomy,
   } = useDemo();
 
+  const router = useRouter();
   const karma = useCommunityKarma();
   const validator = profileSummary.ranks.validator;
   const rankIndex = Math.max(0, VALIDATOR_RANKS.indexOf(validator.rank));
@@ -191,31 +193,38 @@ export default function ValidatorWorkspaceView() {
   }, [refreshRoleDashboard]);
 
   // Claim happens HERE, on the list, before any navigation — the detail page
-  // (`/validator/audit/[id]`) 409s on GET for a window nobody holds yet, so
+  // (`/validator/audit/[id]`) 409s on GET for a window nobody holds yet
+  // (routes/v1/audits.ts → getClaimedAuditWindowDetail "unclaimed"), so
   // clicking straight through to it without claiming first is a dead end.
-  // On success the claimed audit disappears from `availableAudits` (the store
-  // does that) and we refresh the history page so it shows up under "Active
-  // Audits" with its own "Start audit" link — which is now safe to follow.
+  //
+  // On success we go straight in. The claim is COMMITTED server-side before
+  // the POST responds (services/audits.ts claimAuditWindow writes
+  // `claimedByUserId` inside the transaction), and the detail page fetches
+  // client-side on mount, so the GET on the next page is guaranteed to pass
+  // the same claim gate that would have rejected it a moment earlier — the
+  // detail page's own in-place claim path already relies on this ordering.
+  // Landing the validator on the work they just claimed is the whole point of
+  // the click; making them find the card again under "Active Audits" and
+  // press a second control in a different section of the page was not.
+  //
   // On failure (already claimed by someone else, at capacity, network error)
   // the store's `claimAudit` raises the same error toast this page already
-  // uses elsewhere, and we simply stay put.
+  // uses elsewhere and returns false, and we simply stay put with the list
+  // intact. No refetch here on success: it would only repaint the list we are
+  // leaving, and this view re-runs both list effects if the validator returns.
   const handleClaim = useCallback(
     async (auditId: string) => {
       if (claimingId) return;
       setClaimingId(auditId);
       try {
         const ok = await claimAudit(auditId);
-        if (ok) {
-          void Promise.all([
-            fetchOwnedAudits(),
-            fetchHistory(historyPage, historyFilter, debouncedHistorySearch),
-          ]);
-        }
+        if (!ok) return;
+        router.push(`/validator/audit/${auditId}`);
       } finally {
         setClaimingId(null);
       }
     },
-    [claimingId, claimAudit, fetchOwnedAudits, fetchHistory, historyPage, historyFilter, debouncedHistorySearch]
+    [claimingId, claimAudit, router]
   );
 
   useEffect(() => {
@@ -247,10 +256,20 @@ export default function ValidatorWorkspaceView() {
   // than enabled on a fabricated 0.
   const ownedSnapshotReady = !ownedAuditsLoading && !ownedAuditsError;
   const capacityKnown = workSummary != null || ownedSnapshotReady;
+  // `activeClaimedBatches` mirrors the server's own capacity-gate predicate
+  // (services/audits.ts activeClaimedWindowWhere) exactly, including
+  // excluding a superseded window — `claimedBatches - completedBatches` did
+  // not, so a validator holding one retired window could read "at capacity"
+  // with no new work claimable and no way to free the slot themselves. Falls
+  // back to that older subtraction only for a payload predating the field.
+  // The ownership-snapshot fallback below needs the same exclusion: a
+  // superseded window's `status` from GET /v1/me/audits is unchanged (still
+  // "claimed"), so it would otherwise still count here too.
   const claimedAuditCount = workSummary
-    ? Math.max(0, workSummary.validator.claimedBatches - workSummary.validator.completedBatches)
+    ? (workSummary.validator.activeClaimedBatches ??
+        Math.max(0, workSummary.validator.claimedBatches - workSummary.validator.completedBatches))
     : ownedSnapshotReady
-      ? activeAudits.length
+      ? activeAudits.filter((audit) => !audit.supersededAt).length
       : 0;
   // Mirrors the rank-scaled cap the claim endpoint enforces transactionally
   // (POST /v1/audits/:id/claim → services/audits.ts claimAuditWindow, which
@@ -448,6 +467,13 @@ export default function ValidatorWorkspaceView() {
               const decided = audit.decidedCount ?? 0;
               const total = audit.itemCount;
               const pct = completionPct(decided, total);
+              // A corrective backfill retired this window and re-routed its
+              // items into a later one. The row stays — it is a claim this
+              // validator really held, and deleting it would erase that from
+              // their own history — but the detail route hard-rejects a
+              // superseded window, so a link here is a guaranteed dead end
+              // whose 404 copy names three causes that are all wrong.
+              const superseded = Boolean(audit.supersededAt);
               return (
                 // `min-w-0` on the grid ITEM, not just the inner title block.
                 // A grid item defaults to `min-width: auto`, so the track is
@@ -480,18 +506,40 @@ export default function ValidatorWorkspaceView() {
                         <div className="h-full bg-lime-500 rounded-full" style={{ width: `${pct}%` }} />
                       </div>
                     </div>
+                    {/* Said in the card, not only in the CTA's tooltip: a
+                        disabled control with no stated reason is the thing
+                        that sends people to support. */}
+                    {superseded && (
+                      <p className="mt-3 font-mono text-[11px] leading-relaxed text-ink-soft">
+                        This audit window was retired and its items re-routed into a later one. Nothing you already
+                        decided on it was deleted.
+                      </p>
+                    )}
                   </div>
                   <div className="mt-4 flex items-center justify-between pt-3 border-t border-line-soft">
                     <span className="font-mono text-xs text-karma font-medium">
                       +{num((audit.karmaReward ?? 0) * total)} karma
                     </span>
-                    <Link
-                      href={`/validator/audit/${audit.id}`}
-                      className="inline-flex items-center gap-1 rounded-md bg-ink px-3 py-1.5 font-mono text-xs font-semibold text-white hover:bg-ink-light"
-                    >
-                      {decided === 0 ? "Start audit" : "Resume audit"}
-                      <Icon name="arrow-right" size={12} />
-                    </Link>
+                    {superseded ? (
+                      <span
+                        className="inline-flex cursor-not-allowed items-center gap-1 rounded-md border border-line bg-panel px-3 py-1.5 font-mono text-xs font-semibold text-ink-faint"
+                        title={
+                          audit.supersededReason
+                            ? `Retired: ${audit.supersededReason}`
+                            : "This audit window was retired and its items re-routed to a later one."
+                        }
+                      >
+                        Retired — no longer reviewable
+                      </span>
+                    ) : (
+                      <Link
+                        href={`/validator/audit/${audit.id}`}
+                        className="inline-flex items-center gap-1 rounded-md bg-ink px-3 py-1.5 font-mono text-xs font-semibold text-white hover:bg-ink-light"
+                      >
+                        {decided === 0 ? "Start audit" : "Resume audit"}
+                        <Icon name="arrow-right" size={12} />
+                      </Link>
+                    )}
                   </div>
                 </div>
               );
@@ -643,8 +691,13 @@ export default function ValidatorWorkspaceView() {
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {availableAudits.map((batch) => {
                 const totalKarma = (batch.karmaReward ?? 0) * batch.itemCount;
+                // `min-w-0` for the same reason as the active-audit card
+                // above: a grid item defaults to `min-width: auto`, so the
+                // track is floored at min-content and a long unbroken bounty
+                // title pushes horizontal scroll onto the whole page. The fix
+                // landed on that card and was missed on this grid.
                 return (
-                  <div key={batch.id} className="card p-4 flex flex-col justify-between hover:border-ink/30 transition-colors">
+                  <div key={batch.id} className="card min-w-0 p-4 flex flex-col justify-between hover:border-ink/30 transition-colors">
                     <div>
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span className="rounded bg-panel px-1.5 py-0.5 font-mono text-[10px] text-ink-soft uppercase">
@@ -826,9 +879,10 @@ export default function ValidatorWorkspaceView() {
                               ? "overdue"
                               : audit.status}
                         </Pill>
+                        {audit.supersededAt && <Pill tone="warning">retired</Pill>}
                         {pub && <PublicationStatus publication={pub} compact />}
                       </div>
-                      <h3 className="mt-1 font-mono text-sm font-bold text-ink">{audit.bountyTitle}</h3>
+                      <h3 className="mt-1 font-mono text-sm font-bold text-ink break-words">{audit.bountyTitle}</h3>
                       <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-[11px] text-ink-soft">
                         <span>{audit.itemCount} items</span>
                         <span>·</span>
@@ -839,13 +893,29 @@ export default function ValidatorWorkspaceView() {
                     </div>
 
                     <div className="flex items-center gap-2">
-                      <Link
-                        href={`/validator/audit/${audit.id}`}
-                        className="inline-flex items-center gap-1 rounded-md border border-line bg-white px-3 py-1.5 font-mono text-xs font-semibold text-ink hover:bg-panel"
-                      >
-                        {audit.status === "completed" ? "View audit" : "Review batch"}
-                        <Icon name="arrow-right" size={12} />
-                      </Link>
+                      {/* Same dead-end guard as the Active Audits card: the
+                          detail route 404s on a superseded window, so this row
+                          states the reason instead of offering a link. */}
+                      {audit.supersededAt ? (
+                        <span
+                          className="inline-flex cursor-not-allowed items-center gap-1 rounded-md border border-line bg-panel px-3 py-1.5 font-mono text-xs font-semibold text-ink-faint"
+                          title={
+                            audit.supersededReason
+                              ? `Retired: ${audit.supersededReason}`
+                              : "This audit window was retired and its items re-routed to a later one."
+                          }
+                        >
+                          Retired
+                        </span>
+                      ) : (
+                        <Link
+                          href={`/validator/audit/${audit.id}`}
+                          className="inline-flex items-center gap-1 rounded-md border border-line bg-white px-3 py-1.5 font-mono text-xs font-semibold text-ink hover:bg-panel"
+                        >
+                          {audit.status === "completed" ? "View audit" : "Review batch"}
+                          <Icon name="arrow-right" size={12} />
+                        </Link>
+                      )}
                     </div>
                   </div>
                 );

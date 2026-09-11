@@ -7,6 +7,7 @@ import { prisma } from "../../lib/prisma.js";
 import { getCommunityPool, getPoolContractForBounty, listCommunityPools } from "../../services/bounties.js";
 import { createBountyPoolItems, listContributorPoolSubmissions } from "../../services/submissions.js";
 import { awardOrHoldAcceptedItemKarma } from "../../services/karma-holds.js";
+import { acceptedItemKarmaForBounty, effectiveTypePricing, getKarmaMatrix, getKarmaRules } from "../../services/karma.js";
 import { listSponsorSubmissionEvidence, getSponsorSubmissionEvidence, SponsorEvidenceError } from "../../services/sponsor-evidence.js";
 import { notifyUser } from "../../services/notifications.js";
 import { recomputeAcceptedItemCounters } from "../../services/submission-acceptance.js";
@@ -261,7 +262,7 @@ export async function bountyRoutes(app: FastifyInstance) {
     const parsed = sponsorReviewBody.safeParse(req.body);
     if (!parsed.success) return reply.badRequest(parsed.error.message);
 
-    const bounty = await prisma.bounty.findUnique({ where: { id } });
+    const bounty = await prisma.bounty.findUnique({ where: { id }, include: { datasetType: true } });
     if (!bounty) return reply.notFound("Dataset pool not found");
 
     const isOwner =
@@ -282,6 +283,21 @@ export async function bountyRoutes(app: FastifyInstance) {
     }
 
     if (parsed.data.decision === "accept") {
+      // Real per-item pricing (KARMA_PRICING_MATRIX_PLAN.md) rather than the
+      // bare `|| 25` fallback: `karmaPerAcceptedItem === 0` on a pool means
+      // "auto-price this from the matrix", not "pay 25 regardless of
+      // category". An open pool has no ContributorBatch, so the item's
+      // difficulty is the pool-wide `bounty.poolDifficulty` snapshot.
+      const [{ rules }, { matrix: liveMatrix }] = await Promise.all([getKarmaRules(), getKarmaMatrix()]);
+      const typePricing = effectiveTypePricing(bounty.datasetTypeId, bounty.datasetType, liveMatrix);
+      const { amount } = acceptedItemKarmaForBounty(
+        bounty.karmaPerAcceptedItem,
+        bounty.poolDifficulty,
+        bounty.karmaQuote,
+        rules,
+        typePricing
+      );
+
       await prisma.$transaction(async (tx) => {
         await tx.submission.update({
           where: { id: submission.id },
@@ -295,7 +311,7 @@ export async function bountyRoutes(app: FastifyInstance) {
           bountyId: bounty.id,
           userId: submission.contributorUserId,
           eventType: KarmaEventType.community_item_accepted,
-          amount: bounty.karmaPerAcceptedItem || 25,
+          amount,
           sourceType: "Submission",
           sourceId: submission.id,
           metadata: { bountyId: bounty.id, title: submission.title },

@@ -6,15 +6,28 @@ import { getAdminSetting } from "./admin-settings.js";
 import { notifyEvent } from "./notifications.js";
 import { enqueueLeaderboardRankCheck } from "./jobs/leaderboard-movement.js";
 import { CATEGORY_PRICING_SEED } from "../lib/karma-category-scores.js";
+import { CANONICAL_DIFFICULTY_LEVELS, resolveItemDifficulty, type ItemDifficulty } from "../lib/difficulty.js";
 import {
+  bandForVerificationUnits,
+  contributorKarma,
+  contributorMatrixCells,
+  DEFAULT_KARMA_PRICING_TABLE,
+  isComplexityScore,
   isKarmaMatrixConfig,
   isKarmaRulesConfig,
   isKarmaTierConfigList,
   karmaTierForBalanceIn,
+  matrixEntryFor,
   nextKarmaTierIn,
+  reviewLoadForFieldCount,
+  validatorKarma,
+  type ComplexityScore,
   type KarmaMatrixConfig,
+  type KarmaPricingTable,
   type KarmaRulesConfig,
   type KarmaTierConfig,
+  type ReviewLoad,
+  type VerificationBand,
 } from "../lib/karma-matrix.js";
 
 export type KarmaTier = "dharma" | "bodhi" | "moksha" | "nirvana";
@@ -165,6 +178,427 @@ export async function getKarmaRuntimeSettings(): Promise<KarmaRuntimeSettings> {
     rules: rules.rules,
     matrix: matrix.matrix,
     source: { tiers: tiers.source, rules: rules.source, matrix: matrix.source },
+  };
+}
+
+/* ------------------------------------------------------------------------ *
+ * Contributor / validator per-item karma resolution.
+ *
+ * Ported from v1's services/karma.ts, adapted to this tree's simpler
+ * `KarmaMatrixConfig` (per-category axis overrides, keyed by dataset-type id)
+ * instead of v1's fully versioned `KarmaMatrix` document — see
+ * lib/karma-matrix.ts's kernel-vs-config split comment for why the ladder
+ * itself stays a code constant here rather than a third admin setting.
+ *
+ * Resolution order for an accepted item, most-authoritative first:
+ *
+ *  1. A community program that names its own per-item amount at mint time
+ *     keeps it (`Bounty.karmaPerAcceptedItem > 0`) — quoted to contributors
+ *     when they started work and must never change under them.
+ *  2. A frozen `Bounty.karmaQuote` snapshot (axes captured at mint) prices the
+ *     ladder cell from (complexity, difficulty, verification band) using the
+ *     SAME axes the contributor was quoted, immune to a later admin edit of
+ *     the dataset type or the live `karma.matrix` override map.
+ *  3. The live axes — the admin `karma.matrix` per-category override
+ *     (`getKarmaMatrix()`) when present, else the dataset type's own
+ *     `complexityScore`/`verificationUnits` columns — price the same ladder
+ *     cell. This is the branch that was entirely missing before: nothing in
+ *     this codebase turned those two live axes into a karma amount, so every
+ *     zero `karmaPerAcceptedItem` (the "auto-price from the matrix" sentinel)
+ *     fell through to a bare `|| 25` instead.
+ *  4. Otherwise the flat `karma.rules.acceptedItem[difficulty]` scale — an
+ *     unpriced type, or a category with neither a quote nor live axes.
+ *
+ * Never throws: callers run inside accept/award transactions, where raising
+ * would abort acceptance of an already-good submission — strictly worse than
+ * pricing it at the safe flat fallback.
+ */
+
+/** The two pricing axes for one dataset type/category, as read from either
+ * the live catalog row or a live `karma.matrix` override. Both nullable —
+ * an unscored category is deliberately unpriced, never defaulted. */
+export interface TypePricingInputs {
+  complexityScore: number | null;
+  verificationUnits: number | null;
+}
+
+/** Immutable pricing inputs captured on a bounty at mint time. Deliberately
+ * NOT a full versioned ladder snapshot (contrast v1's `BountyKarmaQuote`,
+ * which embeds the whole `KarmaMatrix` document): this tree's ladder is a
+ * code constant (`DEFAULT_KARMA_PRICING_TABLE`), not admin-edited, so there
+ * is nothing further to pin against future drift beyond the two axes and the
+ * field count themselves. */
+export interface BountyKarmaQuote {
+  version: 1;
+  complexityScore: ComplexityScore;
+  verificationUnits: number;
+  fieldCount: number;
+}
+
+/** Build a fresh quote from a dataset type's live axes, e.g. at bounty mint.
+ * Returns null when the type is unpriced — callers must not mint a quote for
+ * an unpriced type. */
+export function createBountyKarmaQuote(type: {
+  complexityScore: number | null;
+  verificationUnits: number | null;
+  fields: unknown;
+}): BountyKarmaQuote | null {
+  if (!isComplexityScore(type.complexityScore) || type.verificationUnits === null || type.verificationUnits < 0) return null;
+  return {
+    version: 1,
+    complexityScore: type.complexityScore,
+    verificationUnits: type.verificationUnits,
+    fieldCount: Array.isArray(type.fields) ? type.fields.length : 0,
+  };
+}
+
+/** Validate a stored `Bounty.karmaQuote` JSON value before trusting it. A row
+ * can predate this shape, be hand-edited, or be malformed — falls back to
+ * "no quote" (never a partial read) so the caller moves to the next
+ * resolution tier instead of pricing off missing fields. */
+function asBountyKarmaQuote(value: unknown): BountyKarmaQuote | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const quote = value as Partial<BountyKarmaQuote>;
+  if (
+    quote.version !== 1 ||
+    !isComplexityScore(quote.complexityScore) ||
+    !Number.isInteger(quote.verificationUnits) ||
+    (quote.verificationUnits ?? -1) < 0 ||
+    !Number.isInteger(quote.fieldCount) ||
+    (quote.fieldCount ?? -1) < 0
+  ) {
+    return null;
+  }
+  return quote as BountyKarmaQuote;
+}
+
+/** The live per-category axes for one dataset type: the admin `karma.matrix`
+ * override when the category has one, else the catalog row's own
+ * `complexityScore`/`verificationUnits`. Wires the previously-dead
+ * `KarmaMatrixConfig`/`matrixEntryFor` into an actual pricing read. */
+export function effectiveTypePricing(
+  datasetTypeId: string | null | undefined,
+  datasetType: { complexityScore: number | null; verificationUnits: number | null } | null | undefined,
+  matrixConfig: KarmaMatrixConfig
+): TypePricingInputs {
+  const override = matrixEntryFor(matrixConfig, datasetTypeId);
+  if (override) return { complexityScore: override.complexityScore, verificationUnits: override.verificationUnits };
+  return { complexityScore: datasetType?.complexityScore ?? null, verificationUnits: datasetType?.verificationUnits ?? null };
+}
+
+/** Karma for one accepted item, tiers 1/3/4 of the resolution order above
+ * (tier 2, the frozen quote, is `acceptedItemKarmaForBounty` below — this is
+ * the pure fallback used both by that function and anywhere a bounty has no
+ * quote at all yet). */
+export function acceptedItemKarma(
+  karmaPerAcceptedItem: number,
+  difficulty: string | null | undefined,
+  rules: KarmaRulesConfig,
+  typePricing: TypePricingInputs | null,
+  table: KarmaPricingTable = DEFAULT_KARMA_PRICING_TABLE
+): number {
+  // (1) Frozen program rate wins over everything.
+  if (karmaPerAcceptedItem > 0) return karmaPerAcceptedItem;
+
+  const resolved = resolveItemDifficulty(difficulty);
+
+  // (3) Live matrix branch — only when both axes are present. Narrowed with
+  // `isComplexityScore` so an out-of-range score fails closed to the flat
+  // scale rather than indexing the ladder to nothing.
+  if (typePricing && isComplexityScore(typePricing.complexityScore) && typePricing.verificationUnits !== null) {
+    const band = bandForVerificationUnits(typePricing.verificationUnits, table);
+    return contributorKarma(typePricing.complexityScore, resolved.level, band, table);
+  }
+
+  // (4) Flat difficulty scale — an unpriced type.
+  return rules.acceptedItem[resolved.level];
+}
+
+/** Karma for one accepted item on a specific bounty — tiers 1/2/3/4 in full,
+ * preferring the bounty's own frozen quote (tier 2) over live axes so a
+ * contributor's price can never move under them after they started work.
+ * Returns the quote alongside the amount so callers (`communityPricingSummary`)
+ * can report which axes actually priced the item. */
+export function acceptedItemKarmaForBounty(
+  karmaPerAcceptedItem: number,
+  difficulty: string | null | undefined,
+  quoteValue: unknown,
+  rules: KarmaRulesConfig,
+  legacyTypePricing: TypePricingInputs | null,
+  table: KarmaPricingTable = DEFAULT_KARMA_PRICING_TABLE
+): { amount: number; quote: BountyKarmaQuote | null } {
+  const quote = asBountyKarmaQuote(quoteValue);
+  if (karmaPerAcceptedItem > 0) return { amount: karmaPerAcceptedItem, quote };
+  if (quote) {
+    const band = bandForVerificationUnits(quote.verificationUnits, table);
+    return { amount: contributorKarma(quote.complexityScore, resolveItemDifficulty(difficulty).level, band, table), quote };
+  }
+  return { amount: acceptedItemKarma(karmaPerAcceptedItem, difficulty, rules, legacyTypePricing, table), quote: null };
+}
+
+/** Karma for one audited item, mirroring `acceptedItemKarma`'s fail-closed
+ * pattern on the validator's (complexity, review-load) axis pair instead. */
+export function auditItemKarma(
+  rules: KarmaRulesConfig,
+  typePricing: { complexityScore: number | null; fieldCount: number } | null,
+  table: KarmaPricingTable = DEFAULT_KARMA_PRICING_TABLE
+): number {
+  if (typePricing && isComplexityScore(typePricing.complexityScore)) {
+    const load = reviewLoadForFieldCount(typePricing.fieldCount, table);
+    return validatorKarma(typePricing.complexityScore, load, table);
+  }
+  return rules.auditItem;
+}
+
+/** Karma for one audited item on a specific bounty: the frozen quote when
+ * present, else the live dataset-type axes, else the flat `auditItem` rate. */
+export function auditItemKarmaForBounty(
+  quoteValue: unknown,
+  rules: KarmaRulesConfig,
+  legacyTypePricing: { complexityScore: number | null; fieldCount: number } | null,
+  table: KarmaPricingTable = DEFAULT_KARMA_PRICING_TABLE
+): { amount: number; quote: BountyKarmaQuote | null } {
+  const quote = asBountyKarmaQuote(quoteValue);
+  if (quote) {
+    const load = reviewLoadForFieldCount(quote.fieldCount, table);
+    return { amount: validatorKarma(quote.complexityScore, load, table), quote };
+  }
+  return { amount: auditItemKarma(rules, legacyTypePricing, table), quote: null };
+}
+
+/**
+ * The validator's real per-item audit rate for a community bounty — what a
+ * completed audit decision actually pays. Thin wrapper over
+ * `auditItemKarmaForBounty` so every surface (audit list/detail, the pool
+ * contract, MCP) derives the SAME number the award path computes, instead of
+ * each re-deriving field count independently or quoting the contributor's
+ * per-accepted-item rate as if it were the validator's (a real bug: the two
+ * are priced on different axes — contributor by complexity x difficulty x
+ * verification-band, validator by complexity x review-load).
+ */
+export function validatorAuditKarmaPerItem(
+  bounty: { karmaQuote: unknown; datasetType: { complexityScore: number | null; fields: unknown } | null },
+  rules: KarmaRulesConfig,
+  table: KarmaPricingTable = DEFAULT_KARMA_PRICING_TABLE
+): number {
+  const fieldCount = Array.isArray(bounty.datasetType?.fields) ? bounty.datasetType!.fields.length : 0;
+  return auditItemKarmaForBounty(
+    bounty.karmaQuote,
+    rules,
+    { complexityScore: bounty.datasetType?.complexityScore ?? null, fieldCount },
+    table
+  ).amount;
+}
+
+/** One server-owned, display-safe pricing snapshot for a community program.
+ * Every UI/MCP surface must consume this instead of presenting the `0`
+ * auto-pricing sentinel or reimplementing ladder arithmetic. */
+export function communityPricingSummary(
+  input: {
+    karmaPerAcceptedItem: number;
+    difficulty: string | null | undefined;
+    karmaQuote: unknown;
+    targetItems: number;
+    auditCoveragePct: number;
+    typePricing: TypePricingInputs;
+    fieldCount: number;
+  },
+  rules: KarmaRulesConfig,
+  table: KarmaPricingTable = DEFAULT_KARMA_PRICING_TABLE
+) {
+  const contributor = acceptedItemKarmaForBounty(
+    input.karmaPerAcceptedItem,
+    input.difficulty,
+    input.karmaQuote,
+    rules,
+    input.typePricing,
+    table
+  );
+  const validator = auditItemKarmaForBounty(
+    input.karmaQuote,
+    rules,
+    { complexityScore: input.typePricing.complexityScore, fieldCount: input.fieldCount },
+    table
+  );
+  const plannedAuditItems = Math.ceil((input.targetItems * input.auditCoveragePct) / 100);
+  return {
+    contributorPerItem: contributor.amount,
+    contributorTotal: contributor.amount * input.targetItems,
+    validatorPerAuditedItem: validator.amount,
+    plannedAuditItems,
+    validatorTotal: validator.amount * plannedAuditItems,
+    // No versioned ladder config exists in this tree (see lib/karma-matrix.ts) —
+    // `matrixVersion` stays null rather than claiming one that cannot drift.
+    matrixVersion: null as number | null,
+    complexityScore: contributor.quote?.complexityScore ?? input.typePricing.complexityScore,
+    verificationUnits: contributor.quote?.verificationUnits ?? input.typePricing.verificationUnits,
+    difficulty: resolveItemDifficulty(input.difficulty).level,
+  };
+}
+
+const PUBLISHED_DIFFICULTY_LABELS: Record<ItemDifficulty, string> = {
+  beginner: "Beginner",
+  intermediate: "Balanced",
+  advanced: "Advanced",
+};
+const REVIEW_LOAD_LABELS: Record<ReviewLoad, string> = { light: "Light", standard: "Standard", heavy: "Heavy" };
+const BAND_LABELS: Record<VerificationBand, string> = { standard: "Standard", elevated: "Elevated", heavy: "Heavy" };
+
+function bandRules(table: KarmaPricingTable): { band: VerificationBand; label: string; rule: string }[] {
+  const { elevatedMinUnits, heavyMinUnits } = table.bandThresholds;
+  return [
+    { band: "standard", label: BAND_LABELS.standard, rule: `${elevatedMinUnits - 1} or fewer verification units` },
+    {
+      band: "elevated",
+      label: BAND_LABELS.elevated,
+      rule: heavyMinUnits - 1 > elevatedMinUnits ? `${elevatedMinUnits}–${heavyMinUnits - 1} units` : `${elevatedMinUnits} units`,
+    },
+    { band: "heavy", label: BAND_LABELS.heavy, rule: `${heavyMinUnits} or more units` },
+  ];
+}
+
+/** One real, live worked example for the member karma page — not the whole
+ * rate table (which is admin-editable and lives in the admin console). Built
+ * from a real, priced dataset type so the numbers shown are ones the platform
+ * would actually pay for that category. */
+export interface KarmaPricingExample {
+  datasetTypeId: string;
+  datasetTypeName: string;
+  complexity: ComplexityScore;
+  verificationUnits: number;
+  band: VerificationBand;
+  bandLabel: string;
+  bandRule: string;
+  difficulties: { level: ItemDifficulty; label: string; publishedLabel: string; karma: number }[];
+  validator: { reviewLoad: ReviewLoad; reviewLoadLabel: string; fields: number; karma: number };
+}
+
+export function karmaPricingExample(
+  type: { id: string; name: string; complexityScore: number | null; verificationUnits: number | null; fieldCount: number },
+  table: KarmaPricingTable = DEFAULT_KARMA_PRICING_TABLE
+): KarmaPricingExample | null {
+  if (!isComplexityScore(type.complexityScore) || type.verificationUnits === null) return null;
+  const band = bandForVerificationUnits(type.verificationUnits, table);
+  const reviewLoad = reviewLoadForFieldCount(type.fieldCount, table);
+  return {
+    datasetTypeId: type.id,
+    datasetTypeName: type.name,
+    complexity: type.complexityScore,
+    verificationUnits: type.verificationUnits,
+    band,
+    bandLabel: BAND_LABELS[band],
+    bandRule: bandRules(table).find((entry) => entry.band === band)?.rule ?? "",
+    difficulties: CANONICAL_DIFFICULTY_LEVELS.map((level) => ({
+      level,
+      label: level.charAt(0).toUpperCase() + level.slice(1),
+      publishedLabel: PUBLISHED_DIFFICULTY_LABELS[level],
+      karma: contributorKarma(type.complexityScore as ComplexityScore, level, band, table),
+    })),
+    validator: {
+      reviewLoad,
+      reviewLoadLabel: REVIEW_LOAD_LABELS[reviewLoad],
+      fields: type.fieldCount,
+      karma: validatorKarma(type.complexityScore, reviewLoad, table),
+    },
+  };
+}
+
+export interface KarmaMatrixView {
+  version: number;
+  pricingActive: boolean;
+  activeScale: "difficulty_scale" | "matrix";
+  bands: { band: VerificationBand; label: string; rule: string }[];
+  example: KarmaPricingExample | null;
+  lowestKarma: number;
+  highestKarma: number;
+  catalogMaxKarma: number | null;
+}
+
+/** Build the render model the member karma page's `PricingSection` expects.
+ * `activeScale` is always "matrix" in this tree: unlike v1, there is no
+ * admin toggle to cut the award path back to the flat difficulty scale while
+ * still publishing the matrix as configuration — the matrix branch fires
+ * whenever a category carries both live axes (see `acceptedItemKarma`
+ * above), full stop. */
+export function karmaMatrixView(
+  table: KarmaPricingTable = DEFAULT_KARMA_PRICING_TABLE,
+  catalogMaxKarma: number | null = null,
+  example: KarmaPricingExample | null = null
+): KarmaMatrixView {
+  const cells = contributorMatrixCells(table);
+  return {
+    version: 1,
+    pricingActive: true,
+    activeScale: "matrix",
+    bands: bandRules(table),
+    example,
+    lowestKarma: Math.min(...cells.map((cell) => cell.karma)),
+    highestKarma: Math.max(...cells.map((cell) => cell.karma)),
+    catalogMaxKarma,
+  };
+}
+
+/** How many accepted items each tier takes, at a given karma-per-item rate.
+ * Computed from the live ladder and live tier thresholds so the two can never
+ * disagree after an admin edits either one. `ceil`, not round. */
+export interface TierItemEstimate {
+  tier: string;
+  label: string;
+  minKarma: number;
+  items: number | null;
+}
+
+export function itemsNeededPerTier(karmaPerItem: number, tiers: readonly KarmaTierConfig[]): TierItemEstimate[] {
+  return tiers
+    .filter((tier) => tier.minKarma > 0)
+    .map((tier) => ({
+      tier: tier.tier,
+      label: tier.label,
+      minKarma: tier.minKarma,
+      items: karmaPerItem > 0 ? Math.ceil(tier.minKarma / karmaPerItem) : null,
+    }));
+}
+
+/**
+ * Two facts the member karma page needs from the live catalog, in one read:
+ * the highest accepted-item karma any active dataset type could actually pay
+ * today (read from catalog rows, not the ladder's top rung — the top rung
+ * needs more verification units than any category currently declares, so
+ * quoting it as reachable would overstate what a contributor can earn), and
+ * one real priced category to build the worked example from.
+ */
+export async function catalogPricingFacts(
+  table: KarmaPricingTable = DEFAULT_KARMA_PRICING_TABLE
+): Promise<{ maxKarma: number | null; example: KarmaPricingExample | null }> {
+  const { matrix: liveMatrix } = await getKarmaMatrix();
+  const priced = await prisma.datasetType.findMany({
+    where: { status: "active", complexityScore: { not: null } },
+    select: { id: true, name: true, complexityScore: true, verificationUnits: true, fields: true, usageCount: true },
+    orderBy: [{ usageCount: "desc" }, { id: "asc" }],
+  });
+  const amounts = priced.flatMap((type) => {
+    const pricing = effectiveTypePricing(type.id, type, liveMatrix);
+    if (!isComplexityScore(pricing.complexityScore) || pricing.verificationUnits === null) return [];
+    const band = bandForVerificationUnits(pricing.verificationUnits, table);
+    return [contributorKarma(pricing.complexityScore, "advanced", band, table)];
+  });
+  const exampleRow = priced.find((type) => {
+    const pricing = effectiveTypePricing(type.id, type, liveMatrix);
+    return isComplexityScore(pricing.complexityScore) && pricing.verificationUnits !== null;
+  });
+  return {
+    maxKarma: amounts.length > 0 ? Math.max(...amounts) : null,
+    example: exampleRow
+      ? karmaPricingExample(
+          {
+            id: exampleRow.id,
+            name: exampleRow.name,
+            ...effectiveTypePricing(exampleRow.id, exampleRow, liveMatrix),
+            fieldCount: Array.isArray(exampleRow.fields) ? exampleRow.fields.length : 0,
+          },
+          table
+        )
+      : null,
   };
 }
 

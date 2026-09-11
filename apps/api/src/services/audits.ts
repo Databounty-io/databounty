@@ -15,7 +15,7 @@ import {
 } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { decodeCursor, encodeCursor, filterKeyOf, InvalidCursorError, takePage } from "../lib/keyset-cursor.js";
-import { awardKarma, KARMA_RULES } from "./karma.js";
+import { awardKarma, KARMA_RULES, acceptedItemKarmaForBounty, effectiveTypePricing, getKarmaMatrix, getKarmaRules, validatorAuditKarmaPerItem } from "./karma.js";
 import { awardOrHoldAcceptedItemKarma } from "./karma-holds.js";
 import { recomputeAcceptedItemCounters } from "./submission-acceptance.js";
 import { notifyUser } from "./notifications.js";
@@ -25,13 +25,16 @@ import { openRouterConfigured } from "./llm-client.js";
 import { listBountyBriefArtifacts } from "./artifacts.js";
 
 /**
- * Flat karma awarded to the validator per decision recorded (KARMA_RULES.auditItem
- * — the same constant the rest of this API already declares for this purpose).
- * This build has no per-decision karma-pricing-matrix wiring
- * (KARMA_PRICING_MATRIX_PLAN.md / Bounty.karmaQuote are unread here) — every
- * decision earns this flat rate regardless of bounty/dataset-type complexity.
- * Exported so list/detail responses can show the real number that will
- * actually be awarded, not a fabricated one.
+ * Flat fallback karma per validator decision (`KARMA_RULES.auditItem`) — the
+ * rate paid when a bounty's dataset type carries no priced axes and no frozen
+ * `karmaQuote`. `decideAuditItems` (below) now resolves the REAL, per-bounty
+ * rate via `validatorAuditKarmaPerItem` (KARMA_PRICING_MATRIX_PLAN.md:
+ * complexity x review-load) before awarding, falling back to this constant
+ * only inside that resolver's own fail-closed branch. The list/detail
+ * `karmaReward` projections elsewhere in this file still show this flat
+ * constant rather than the resolved per-bounty rate — a known display-only
+ * gap (they would need the same bounty+datasetType context threaded through
+ * their own queries), not a mismatch in what actually gets awarded.
  */
 export const VALIDATOR_KARMA_PER_DECISION = KARMA_RULES.auditItem;
 
@@ -687,6 +690,20 @@ export async function listMyAuditWindows(params: {
         language: w.bounty.language,
         kind: "community" as const,
         karmaReward: VALIDATOR_KARMA_PER_DECISION,
+        // A superseded window is still YOUR claim and stays listed — deleting
+        // it from the validator's own history would erase the record that they
+        // ever held it. But `loadWindowDetailForValidator` hard-rejects it
+        // (`if (!window || window.supersededAt) return null`), so the detail
+        // route 404s. Without this flag the client cannot tell the difference
+        // and renders a live "Start audit" link onto a guaranteed dead end,
+        // whose 404 copy then blames three causes that are all wrong ("doesn't
+        // exist, already settled, or contains a submission you authored").
+        // Surfaced so the client can render it as a tombstone instead. Not
+        // folded into `status`: that union is the user-facing filter
+        // (claimed / overdue_review / completed) and superseding is orthogonal
+        // to it — a window can be superseded in any of those states.
+        supersededAt: w.supersededAt ? w.supersededAt.toISOString() : null,
+        supersededReason: w.supersededReason,
       };
     }),
     total,
@@ -727,18 +744,36 @@ function decodeMyAuditCursor(token: string, filterKey: string) {
  * return `[]` — no claim column existed yet to count against.
  */
 export async function getMyAuditWorkSummary(validatorUserId: string) {
-  const [claimedBatches, completedBatches, pendingDecisions] = await Promise.all([
+  const [claimedBatches, completedBatches, pendingDecisions, activeClaimedBatches] = await Promise.all([
+    // Lifetime "TOTAL CLAIMED" stat (view.tsx) — every window this validator
+    // has ever claimed, superseded or not. A corrective backfill retiring a
+    // window does not erase the historical fact that they claimed it.
     prisma.humanAuditWindow.count({ where: { claimedByUserId: validatorUserId } }),
     prisma.humanAuditWindow.count({ where: { claimedByUserId: validatorUserId, settledAt: { not: null } } }),
     prisma.humanAuditWindowMembership.count({
       where: {
         selected: true,
         submission: { status: SubmissionStatus.in_audit },
-        window: { claimedByUserId: validatorUserId, settledAt: null },
+        // A superseded window's items were re-routed into a later one and
+        // the detail route hard-rejects the window itself, so nothing under
+        // it can actually be decided by this validator any more — counting
+        // it here would tell them decisions are "pending" that they have no
+        // way to ever make.
+        window: { claimedByUserId: validatorUserId, settledAt: null, supersededAt: null },
       },
     }),
+    // The client's capacity-gate display (`claimedAuditCount`, view.tsx) must
+    // use the SAME predicate the server enforces in `activeClaimedWindowWhere`
+    // (claimAuditWindow's capacity check), not a `claimedBatches -
+    // completedBatches` approximation — that subtraction still counted a
+    // superseded-but-unsettled window as an occupied slot, which is exactly
+    // how a validator holding one retired window could read "at capacity"
+    // with no new work claimable and no way to free the slot themselves.
+    prisma.humanAuditWindow.count({
+      where: activeClaimedWindowWhere(validatorUserId, new Date()),
+    }),
   ]);
-  return { claimedBatches, completedBatches, pendingDecisions };
+  return { claimedBatches, completedBatches, pendingDecisions, activeClaimedBatches };
 }
 
 /**
@@ -1036,6 +1071,13 @@ function activeClaimedWindowWhere(validatorUserId: string, now: Date): Prisma.Hu
   return {
     claimedByUserId: validatorUserId,
     settledAt: null,
+    // A corrective backfill re-routes a superseded window's items into a
+    // later one and the validator can never open it again (the detail route
+    // hard-rejects `supersededAt`, see loadWindowDetailForValidator) — so it
+    // must not go on costing them a concurrent-claim slot. Before this, a
+    // validator holding one retired window could be stuck at capacity unable
+    // to claim any new work, with no way to ever release the slot themselves.
+    supersededAt: null,
     OR: [{ claimExpiresAt: null }, { claimExpiresAt: { gte: now } }],
   };
 }
@@ -1265,7 +1307,7 @@ export async function submitAuditDecisions(params: {
   const window = await prisma.humanAuditWindow.findUnique({
     where: { id: params.windowId },
     include: {
-      bounty: true,
+      bounty: { include: { datasetType: true } },
       memberships: {
         where: { selected: true },
         include: { submission: { select: { id: true, status: true, contributorUserId: true, title: true } } },
@@ -1317,6 +1359,22 @@ export async function submitAuditDecisions(params: {
   // no batch and never will; their decisions apply normally and simply record
   // no historical row (see the write below).
   const auditBatchId = window.auditBatchId;
+
+  // Real per-item pricing (KARMA_PRICING_MATRIX_PLAN.md) rather than the flat
+  // `|| 25` / `KARMA_RULES.auditItem` fallbacks: `karmaPerAcceptedItem === 0`
+  // on this pool means "auto-price this from the matrix". Computed once for
+  // the whole decision batch — every item in a window belongs to the same
+  // bounty, so the amount is identical for each accept in the loop below.
+  const [{ rules: karmaRules }, { matrix: liveKarmaMatrix }] = await Promise.all([getKarmaRules(), getKarmaMatrix()]);
+  const contributorTypePricing = effectiveTypePricing(window.bounty.datasetTypeId, window.bounty.datasetType, liveKarmaMatrix);
+  const { amount: acceptedItemKarmaAmount } = acceptedItemKarmaForBounty(
+    window.bounty.karmaPerAcceptedItem,
+    window.bounty.poolDifficulty,
+    window.bounty.karmaQuote,
+    karmaRules,
+    contributorTypePricing
+  );
+  const validatorKarmaPerDecision = validatorAuditKarmaPerItem(window.bounty, karmaRules);
 
   await prisma.$transaction(async (tx) => {
     for (const dec of params.decisions) {
@@ -1417,7 +1475,7 @@ export async function submitAuditDecisions(params: {
           bountyId: window.bountyId,
           userId: membership.submission.contributorUserId,
           eventType: KarmaEventType.community_item_accepted,
-          amount: window.bounty.karmaPerAcceptedItem || 25,
+          amount: acceptedItemKarmaAmount,
           sourceType: "Submission",
           sourceId: membership.submissionId,
           metadata: { bountyId: window.bountyId, windowId: window.id, title: membership.submission.title },
@@ -1446,7 +1504,7 @@ export async function submitAuditDecisions(params: {
       await awardKarma(tx, {
         userId: params.validatorUserId,
         eventType: KarmaEventType.community_audit_completed,
-        amount: VALIDATOR_KARMA_PER_DECISION,
+        amount: validatorKarmaPerDecision,
         sourceType: "HumanAuditWindowMembership",
         sourceId: membership.id,
         metadata: { bountyId: window.bountyId, windowId: window.id, submissionId: membership.submissionId },

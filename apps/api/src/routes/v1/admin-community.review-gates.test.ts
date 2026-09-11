@@ -281,13 +281,24 @@ vi.mock("../../lib/audit-log.js", () => ({
   },
 }));
 
-vi.mock("../../services/karma.js", () => ({
-  KARMA_RULES: DEFAULT_KARMA_RULES,
-  getKarmaRules: async () => ({ rules: state.karmaRules, source: "stored" as const }),
-  awardKarma: async (_tx: unknown, award: Record<string, unknown>) => {
-    state.karmaAwards.push(award);
-  },
-}));
+vi.mock("../../services/karma.js", async () => {
+  // Only KARMA_RULES/getKarmaRules/awardKarma need test doubles (they touch
+  // state/DB); createBountyKarmaQuote is pure (no I/O — see its own doc
+  // comment), so the real implementation is pulled in via importActual
+  // rather than re-stubbed, so this mock can't silently drift from it the
+  // way it did when the mint routes started calling it and this file didn't
+  // know the name existed (every mint call threw `createBountyKarmaQuote is
+  // not a function`, turning every 201 in this suite into a 500).
+  const actual = await vi.importActual<typeof import("../../services/karma.js")>("../../services/karma.js");
+  return {
+    ...actual,
+    KARMA_RULES: DEFAULT_KARMA_RULES,
+    getKarmaRules: async () => ({ rules: state.karmaRules, source: "stored" as const }),
+    awardKarma: async (_tx: unknown, award: Record<string, unknown>) => {
+      state.karmaAwards.push(award);
+    },
+  };
+});
 
 vi.mock("../../services/notifications.js", () => ({
   notifyEvent: async (_tx: unknown, type: string) => {

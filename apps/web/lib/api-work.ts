@@ -62,6 +62,10 @@ interface ApiAuditBatch {
    * enterprise row (no pool, no Hugging Face publication) and absent on an API
    * predating the block — both render nothing rather than "not published". */
   publication?: DatasetPublication | null;
+  /** Set only when a corrective backfill retired this window; see the note on
+   * `AuditBatch.supersededAt`. Absent on an older API — reads as not superseded. */
+  supersededAt?: string | null;
+  supersededReason?: string | null;
 }
 
 export interface ApiValidationResult {
@@ -439,6 +443,10 @@ function mapAudit(a: ApiAuditBatch): AuditBatchRow {
     // Parsed, never trusted verbatim: a half-formed block would draw a pill
     // that is a trust claim about a real dataset (see lib/publication.ts).
     publication: parseDatasetPublication(a.publication),
+    // Carried through so the row can render as a tombstone: the detail route
+    // 404s on a superseded window, so linking to it is a guaranteed dead end.
+    supersededAt: a.supersededAt ?? null,
+    supersededReason: a.supersededReason ?? null,
   };
 }
 
@@ -728,7 +736,22 @@ export interface ValidatorDashboardData {
 
 export type PersonalWorkSummary = {
   contributor: { submitted: number; processing: number; awaitingDecision: number; finalAccepted: number; needsAttention: number; terminalFailed: number };
-  validator: { claimedBatches: number; completedBatches: number; pendingDecisions: number; decidedItems: number };
+  validator: {
+    claimedBatches: number;
+    completedBatches: number;
+    pendingDecisions: number;
+    decidedItems: number;
+    /** The SAME predicate the claim endpoint's capacity gate enforces
+     * server-side (services/audits.ts activeClaimedWindowWhere) — settled,
+     * superseded, and claim-expired windows all excluded. Use this for the
+     * "N / M slots used" display, never `claimedBatches - completedBatches`:
+     * that subtraction still counted a superseded-but-unsettled window as an
+     * occupied slot, which could leave a validator reading "at capacity" with
+     * no new work claimable and no way to free the slot themselves. Optional
+     * only for a payload predating the field, which falls back to that same
+     * stale subtraction rather than crashing. */
+    activeClaimedBatches?: number;
+  };
 };
 
 export type SubmissionListFilter = "all" | "action_needed" | "in_review" | "accepted";

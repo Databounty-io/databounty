@@ -14,6 +14,7 @@ import { emitAuditAvailableMatches, notifyUser } from "./notifications.js";
 import { writeAuditLog } from "../lib/audit-log.js";
 import { recomputeAcceptedItemCounters, FINAL_ACCEPTED_STATUSES } from "./submission-acceptance.js";
 import { enqueueCommunityPublish } from "./community-publish.js";
+import { acceptedItemKarmaForBounty, effectiveTypePricing, getKarmaMatrix, getKarmaRules } from "./karma.js";
 
 /**
  * Community open-pool close-out + human-audit-window sampling
@@ -603,15 +604,31 @@ interface SamplingOutcome {
  */
 export async function runPoolSamplingJob(bountyId: string): Promise<SamplingOutcome> {
   const notifications: Array<() => Promise<unknown>> = [];
+  // Fetched once, outside the transaction: these are live admin settings, not
+  // part of the row state this job needs a consistent snapshot of.
+  const [{ rules: karmaRules }, { matrix: liveKarmaMatrix }] = await Promise.all([getKarmaRules(), getKarmaMatrix()]);
 
   const result = await prisma.$transaction(async (tx) => {
     const bounty = await tx.bounty.findUnique({
       where: { id: bountyId },
-      include: { datasetType: { select: { domain: true } } },
+      include: { datasetType: { select: { id: true, domain: true, complexityScore: true, verificationUnits: true, fields: true } } },
     });
     if (!bounty || bounty.kind !== BountyKind.community) return { skipped: true, reason: "not_a_community_bounty" };
     if (!bounty.poolClosedAt) return { skipped: true, reason: "pool_not_closed" };
     if (bounty.poolSamplingCompletedAt) return { skipped: true, reason: "already_completed" };
+
+    // Real per-item pricing (KARMA_PRICING_MATRIX_PLAN.md): `karmaPerAcceptedItem
+    // === 0` means "auto-price this from the matrix", not "pay a flat 25". An
+    // open pool has no ContributorBatch, so every item in it shares the one
+    // pool-wide `poolDifficulty` snapshot.
+    const typePricing = effectiveTypePricing(bounty.datasetTypeId, bounty.datasetType, liveKarmaMatrix);
+    const { amount: acceptedItemKarmaAmount } = acceptedItemKarmaForBounty(
+      bounty.karmaPerAcceptedItem,
+      bounty.poolDifficulty,
+      bounty.karmaQuote,
+      karmaRules,
+      typePricing
+    );
 
     // Compare-and-swap + row-lock mutex: see doc comment above.
     const claim = await tx.bounty.updateMany({
@@ -876,7 +893,7 @@ export async function runPoolSamplingJob(bountyId: string): Promise<SamplingOutc
           bountyId,
           userId: sub.contributorUserId,
           eventType: KarmaEventType.community_item_accepted,
-          amount: bounty.karmaPerAcceptedItem || 25,
+          amount: acceptedItemKarmaAmount,
           sourceType: "Submission",
           sourceId: sub.id,
           metadata: { bountyId, windowId: window.id, title: sub.title },

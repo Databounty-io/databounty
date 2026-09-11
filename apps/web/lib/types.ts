@@ -251,6 +251,13 @@ export interface AuditBatch {
    * for community audits (see GET /v1/audits). */
   kind?: "community" | "enterprise";
   karmaReward?: number | null;
+  /** Set when a corrective backfill retired this window and re-routed its items
+   * into a later, policy-compliant one. The window stays in the validator's own
+   * lists — it is still a claim they really held — but the detail route
+   * hard-rejects it, so the row must render as a tombstone, never as a link.
+   * Absent on an API predating the field, which reads as "not superseded". */
+  supersededAt?: string | null;
+  supersededReason?: string | null;
 }
 
 export interface BountySlot {

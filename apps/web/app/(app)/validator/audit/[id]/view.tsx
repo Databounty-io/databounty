@@ -554,9 +554,21 @@ export default function AuditReviewView() {
   const allDecided = total > 0 && decidedCount === total;
   const completed = audit.status === "completed";
 
+  // With nothing selected yet, open on the first UNDECIDED item rather than
+  // row 0. Landing on an already-decided item shows the read-only "this
+  // decision is final" banner and no Approve/Reject controls, which reads as
+  // "there is nothing to review here" even when pending items sit further
+  // down the rail — the controls are the last block of a very long card, so
+  // their absence is not something a validator can see at a glance.
+  // `advanceToNextUndecided` already does this, but only AFTER a decision.
+  // Falls back to 0 when everything is decided (the all-decided footer and the
+  // per-item final banners then explain the state).
+  const firstUndecidedIndex = rows.findIndex((r) => r.item.decision === "pending");
   const currentIndex = Math.max(
     0,
-    selectedId ? rows.findIndex((r) => r.item.id === selectedId) : 0
+    selectedId
+      ? rows.findIndex((r) => r.item.id === selectedId)
+      : firstUndecidedIndex
   );
   const current = rows[currentIndex];
 
@@ -800,13 +812,21 @@ export default function AuditReviewView() {
               }`}
             >
               <StateMarker decision={r.item.decision} index={i + 1} />
-              {i + 1}
+              {/* The index alone (StateMarker already carries it) left this
+                  strip unnavigable: below `lg` the titled rail is hidden, so
+                  picking an item meant opening each one in turn. */}
+              <span className="max-w-[9rem] truncate">{r.submission.title}</span>
             </button>
           );
         })}
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-[260px_1fr]">
+      {/* `minmax(0,1fr)`, not `1fr`: a bare `1fr` is `minmax(auto,1fr)`, so the
+          main track is floored at its content's min-content width — the stage
+          matrix's status badges and the `break-all` ID rows in the evidence
+          cards — and 260 + gap + that floor overflows between 1024 and ~1280,
+          scrolling the whole page sideways. Matches issues/[id]/view.tsx. */}
+      <div className="grid gap-5 lg:grid-cols-[260px_minmax(0,1fr)]">
         {/* Left rail — item list (desktop) */}
         <aside className="hidden lg:block">
           <div className="micro-label mb-2 text-ink-faint">items</div>
@@ -838,8 +858,8 @@ export default function AuditReviewView() {
         </aside>
 
         {/* Main pane — one selected item */}
-        <div>
-          {sub && current && (
+        <div className="min-w-0">
+          {sub && current ? (
             <div className="card px-5 py-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -927,7 +947,7 @@ export default function AuditReviewView() {
                 <>
                   <div className="mt-4">
                     <div className="micro-label mb-1.5 text-ink-faint">prompt</div>
-                    <p className="text-[13.5px] leading-relaxed">{sub.prompt}</p>
+                    <p className="text-[13.5px] leading-relaxed break-words">{sub.prompt}</p>
                   </div>
 
                   <div className="mt-4 grid gap-3 md:grid-cols-2">
@@ -1080,6 +1100,30 @@ export default function AuditReviewView() {
                 </div>
               </div>
             </div>
+          ) : (
+            /* No `else` here used to render literally nothing: an audit whose
+               items failed to resolve left a blank pane under a footer reading
+               "0 items left", which reads as "nothing to review" rather than
+               "we could not load your items". Say which it is. */
+            <Empty
+              icon="alert"
+              title="No items to review here"
+              description="This audit is claimed by you, but none of its submissions could be loaded. That is not the same as an empty queue — reload before deciding anything."
+              action={
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-white px-3 py-1.5 font-mono text-xs font-semibold text-ink hover:bg-panel"
+                  onClick={() => {
+                    setLoading(true);
+                    setLoadError(null);
+                    setDetail(null);
+                    setLoadAttempt((value) => value + 1);
+                  }}
+                >
+                  Reload this audit
+                </button>
+              }
+            />
           )}
         </div>
       </div>
@@ -1097,10 +1141,16 @@ export default function AuditReviewView() {
               <span>{pendingCount} item{pendingCount === 1 ? "" : "s"} left · each decision saves immediately</span>
             )}
           </div>
+          {/* The three count pills wrap to their own rows on a phone, turning
+              this bar into ~130px of permanent chrome on top of the app
+              shell's own mobile header and squeezing the decision form — the
+              actual point of the page. They duplicate what the item chip strip
+              and the "N items left" line above already show, so drop them
+              below `sm` and keep the karma total. */}
           <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
-            <span className="rounded-full border border-emerald-700/60 px-2.5 py-1 text-emerald-300">{approvedCount} approved</span>
-            <span className="rounded-full border border-rose-700/60 px-2.5 py-1 text-rose-300">{rejectedCount} rejected</span>
-            <span className="rounded-full border border-dark-line px-2.5 py-1 text-dark-soft">{pendingCount} pending</span>
+            <span className="max-sm:hidden rounded-full border border-emerald-700/60 px-2.5 py-1 text-emerald-300">{approvedCount} approved</span>
+            <span className="max-sm:hidden rounded-full border border-rose-700/60 px-2.5 py-1 text-rose-300">{rejectedCount} rejected</span>
+            <span className="max-sm:hidden rounded-full border border-dark-line px-2.5 py-1 text-dark-soft">{pendingCount} pending</span>
             <span className="ml-1 text-lime font-mono">
               +{num((detail?.karmaReward ?? 0) * total)} karma on completion
             </span>
