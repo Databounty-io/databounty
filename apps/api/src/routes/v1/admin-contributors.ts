@@ -8,6 +8,7 @@ import { requireRole, ADMIN_AND_ABOVE_READONLY, ADMIN_AND_MEMBER, type AuthedUse
 import { writeAuditLog } from "../../lib/audit-log.js";
 import { contributorRankForAcceptedItems } from "../../services/reputation.js";
 import { revokeLiveUploadReviewDraftCapabilities } from "../../services/upload-review-drafts.js";
+import { invalidateUserApiKeys } from "../../services/api-keys.js";
 
 /**
  * Admin contributor roster backing community/apps/admin's /contributors
@@ -208,6 +209,17 @@ export async function adminContributorRoutes(app: FastifyInstance) {
       });
       return u;
     });
+
+    // A suspended account must stop authenticating NOW, not when the
+    // verified-key cache entry happens to expire. The key rows themselves are
+    // untouched on purpose -- reinstatement restores access without the owner
+    // having to mint new credentials -- so `verifyApiKey`'s account-status
+    // check is the only thing standing between a suspended user and a working
+    // API key, and that check is what the cache skips on a hit.
+    //
+    // After the commit, never inside it: clearing against a state that can
+    // still roll back would just be re-populated from the pre-rollback row.
+    await invalidateUserApiKeys(id);
 
     return reply.send({ ok: true, id: updated.id, restricted: updated.status === UserStatus.suspended });
   });

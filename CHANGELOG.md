@@ -10,6 +10,14 @@ mechanics — CI, tooling, refactors, dependency bumps — are deliberately not 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 2026.09.23 — 2026-09-23
+
+**Faster authenticated requests** — Requests made with an API key are now served with far less work behind the scenes.
+
+### Changed
+- Requests authenticated with an API key are now verified from a short-lived cache rather than re-checked from scratch every time, which makes them noticeably quicker. Revoking or rotating a key, and suspending an account, still take effect immediately.
+- The "Last used" time shown against an API key now updates at most once a minute rather than on every single request.
+
 ## 2026.09.22 — 2026-09-22
 
 **Notification delivery and connector reliability** — Email notifications now reach every member, duplicates are gone, and connectors recover on their own.

@@ -140,10 +140,19 @@ vi.mock("../../services/admin-settings.js", () => ({
   getAdminSettingHistory: async () => [],
   validateAdminSettingValue: () => ({ ok: true }),
 }));
+/** Accounts whose cached API keys this route dropped, in call order. */
+const apiKeyInvalidations: string[] = [];
 vi.mock("../../services/api-keys.js", () => ({
   adminListApiKeys: async () => [],
   adminRevokeApiKey: async () => {},
   adminCountActiveApiKeys: async () => 0,
+  // Suspension must also drop the account's cached API keys, or a suspended
+  // user keeps authenticating for up to the cache TTL through a key issued
+  // before the suspension. Recorded rather than ignored so this file asserts
+  // it, since it already owns the suspension route's other side effects.
+  invalidateUserApiKeys: async (userId: string) => {
+    apiKeyInvalidations.push(userId);
+  },
 }));
 vi.mock("../../lib/admin-invite.js", () => ({ createAdminInvite: async () => "dummy" }));
 vi.mock("../../lib/auth-notify.js", () => ({ sendAdminInviteEmail: async () => {} }));
@@ -267,6 +276,35 @@ describe("POST /v1/admin/users/:id/restrict — SEC-09 write side", () => {
       targetId: OWNER,
       metadata: { reason: "abuse", revokedUploadDrafts: 4 },
     });
+  });
+
+  it("drops the suspended account's cached API keys, after the transaction", async () => {
+    // The key ROWS are deliberately left alone — reinstatement should restore
+    // access without the owner minting new credentials — which makes the
+    // account-status check inside verifyApiKey the only barrier, and a cache
+    // hit is exactly what skips it. Without this call a suspended account keeps
+    // authenticating for up to the cache TTL.
+    apiKeyInvalidations.length = 0;
+
+    const res = await restrict(OWNER, { status: "suspended", reason: "abuse investigation" });
+
+    expect(res.statusCode).toBe(200);
+    expect(apiKeyInvalidations).toEqual([OWNER]);
+  });
+
+  it("does not drop cached API keys when the transaction rolls back", async () => {
+    // Invalidating against a state that can still roll back is not harmless:
+    // the next request re-populates the cache from the pre-rollback row, so the
+    // clear is wasted and the account is left exactly as it was. The call has
+    // to sit after the commit, and this is what proves it does.
+    apiKeyInvalidations.length = 0;
+    seedDraft("d_rollback", OWNER, "ready");
+    state.failDraftUpdateMany = true;
+
+    const res = await restrict(OWNER, { status: "suspended", reason: "abuse investigation" });
+
+    expect(res.statusCode).toBe(500);
+    expect(apiKeyInvalidations).toEqual([]);
   });
 
   it("performs the status flip, the draft revoke and the audit write on the same transaction client", async () => {

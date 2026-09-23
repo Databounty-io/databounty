@@ -1,10 +1,75 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { randomBytes, createHmac } from "node:crypto";
-import type { ApiKeyScope } from "@prisma/client";
+import type { ApiKeyScope, Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { config } from "../config.js";
 import { writeAuditLog } from "../lib/audit-log.js";
+import { cache } from "../lib/cache/index.js";
+
+/**
+ * Verified-key cache.
+ *
+ * WHY. Every authenticated request paid four database round trips before it
+ * reached any handler: find the key, join the owner for account status, bump
+ * `lastUsedAt`, and insert a rate-limit bucket row. Measured on production
+ * 2026-09-23, essentially all traffic on this deployment is MCP -- 67,348
+ * `/mcp` requests against 45 on the REST vhost in one day -- so that overhead
+ * WAS the load, roughly 2M queries/day and the largest remaining source of
+ * database egress once compression and public-read caching had landed. V1
+ * cached this; the rebuild never did, because until 2026-09-23 production had
+ * no cache to put it in.
+ *
+ * WHAT IS CACHED. Only keys that verified successfully. A failed lookup is
+ * never cached: an unauthenticated caller controls the token, so caching
+ * misses would let anyone fill the cache with junk at one entry per request.
+ * The stored value carries no secret -- the cache KEY is the HMAC hash the
+ * database itself is indexed on, and the value is the same `{id, userId,
+ * scopes}` the caller would have received anyway.
+ *
+ * STALENESS IS BOUNDED TWO WAYS. The TTL caps it at 60 seconds for anything
+ * that changes without going through this module, and every mutation that can
+ * invalidate a key deletes its entry explicitly, so revocation, rotation and
+ * suspension take effect immediately rather than after a TTL. Expiry needs
+ * neither: it is re-evaluated on every cache hit from the stored timestamp, so
+ * a key cannot outlive `expiresAt` even by one request.
+ */
+/** Same shape the other services use: a transaction client or the root client. */
+type DbClient = Prisma.TransactionClient | typeof prisma;
+
+const API_KEY_CACHE_TTL_SEC = 60;
+
+function apiKeyCacheKey(keyHash: string): string {
+  return `apikey:v1:${keyHash}`;
+}
+
+interface CachedApiKey {
+  verified: VerifiedApiKey;
+  /** Re-checked on every hit, so a cached key expires on time regardless of TTL. */
+  expiresAtMs: number | null;
+}
+
+/**
+ * Drop every cached key belonging to one account.
+ *
+ * The cache is keyed by key hash, so there is no way to reach a user's entries
+ * without looking up their hashes first. That is the price of never storing a
+ * reverse index, and it is worth paying: this runs on suspension, which is
+ * rare, while the read path runs thousands of times an hour.
+ *
+ * Deliberately NOT filtered to un-revoked keys. A key revoked moments earlier
+ * in the same operation may still be cached, and the point here is to leave
+ * nothing behind.
+ *
+ * Call this AFTER the transaction commits. Calling it inside one would clear
+ * the cache against a state that can still roll back, and the next request
+ * would re-populate it from the pre-rollback row.
+ */
+export async function invalidateUserApiKeys(userId: string, db: DbClient = prisma): Promise<void> {
+  const rows = await db.apiKey.findMany({ where: { userId }, select: { keyHash: true } });
+  if (rows.length === 0) return;
+  await cache.del(rows.map((r: { keyHash: string }) => apiKeyCacheKey(r.keyHash)));
+}
 
 export const KEY_PREFIX = "db_live_sk_";
 const PREFIX_DISPLAY_LEN = 12;
@@ -152,10 +217,16 @@ export async function rotateApiKey(params: {
       after: { keyPrefix: prefix, rotatedAt: now, expiresAt, scopes: existing.scopes },
       ip: params.ip,
     });
-    return summarize(row);
+    return { summary: summarize(row), retiredKeyHash: existing.keyHash };
   });
 
-  return result ? { rawKey, summary: result } : null;
+  if (!result) return null;
+  // Rotation retires the old secret immediately -- no TTL grace. The NEW key
+  // needs no invalidation: its hash has never been cached, because only a
+  // successful verification writes an entry.
+  await cache.del(apiKeyCacheKey(result.retiredKeyHash));
+
+  return { rawKey, summary: result.summary };
 }
 
 export async function revokeApiKey(params: {
@@ -184,12 +255,28 @@ export async function revokeApiKey(params: {
     return summarize(row);
   });
 
+  // Revocation must take effect on the next request, not at the next TTL
+  // boundary. `existing` was read before the update, so its hash is the one
+  // under which any cached entry was written.
+  await cache.del(apiKeyCacheKey(existing.keyHash));
+
   return summary;
 }
 
 export async function verifyApiKey(token: string): Promise<VerifiedApiKey | null> {
   if (!token.startsWith(KEY_PREFIX)) return null;
   const keyHash = hashKey(token);
+
+  // A hit skips the lookup, the owner join AND the `lastUsedAt` write. That
+  // last one is intentional: `lastUsedAt` is a coarse "is this key still in
+  // use" signal shown in the dashboard, not an audit record -- the audit trail
+  // is `admin_audit_log`. Once per TTL per key is ample, and it turns a write
+  // on every single request into roughly one a minute.
+  const cached = await cache.get<CachedApiKey>(apiKeyCacheKey(keyHash));
+  if (cached) {
+    if (cached.expiresAtMs !== null && cached.expiresAtMs <= Date.now()) return null;
+    return cached.verified;
+  }
 
   const row = await prisma.apiKey.findUnique({
     where: { keyHash },
@@ -218,11 +305,16 @@ export async function verifyApiKey(token: string): Promise<VerifiedApiKey | null
     data: { lastUsedAt: new Date() },
   }).catch(() => {});
 
-  return {
-    id: row.id,
-    userId: row.userId,
-    scopes: row.scopes,
-  };
+  const verified: VerifiedApiKey = { id: row.id, userId: row.userId, scopes: row.scopes };
+  // Written only on the success path, below every rejection above: a revoked,
+  // expired or suspended key must never become a cache entry that outlives the
+  // check that rejected it.
+  await cache.set<CachedApiKey>(
+    apiKeyCacheKey(keyHash),
+    { verified, expiresAtMs: row.expiresAt ? row.expiresAt.getTime() : null },
+    API_KEY_CACHE_TTL_SEC,
+  );
+  return verified;
 }
 
 /** Minimal overview metric: unlike the administrative roster, this exposes
@@ -289,6 +381,11 @@ export async function adminRevokeApiKey(
     });
     return summarize(row);
   });
+
+  // Same immediacy as the self-service path above. This was the easier one to
+  // miss: an operator revoking someone else's key is exactly the case where a
+  // minute of continued access is least acceptable.
+  await cache.del(apiKeyCacheKey(existing.keyHash));
 
   return summary;
 }

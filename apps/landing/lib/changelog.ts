@@ -46,6 +46,22 @@ export const CHANGELOG_KIND_LABEL: Record<ChangeKind, string> = {
 /** Newest first. */
 export const CHANGELOG: Release[] = [
   {
+    version: "2026.09.23",
+    date: "2026-09-23",
+    title: "Faster authenticated requests",
+    summary: "Requests made with an API key are now served with far less work behind the scenes.",
+    entries: [
+      {
+        kind: "changed",
+        text: "Requests authenticated with an API key are now verified from a short-lived cache rather than re-checked from scratch every time, which makes them noticeably quicker. Revoking or rotating a key, and suspending an account, still take effect immediately.",
+      },
+      {
+        kind: "changed",
+        text: "The \"Last used\" time shown against an API key now updates at most once a minute rather than on every single request.",
+      },
+    ],
+  },
+  {
     version: "2026.09.22",
     date: "2026-09-22",
     title: "Notification delivery and connector reliability",

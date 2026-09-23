@@ -17,6 +17,7 @@ import { notifyEvent, subscribeAdminNotificationStream } from "../../services/no
 import { getCommunityQualityMetrics } from "../../services/admin-quality-metrics.js";
 import { recomputeAcceptedItemCounters } from "../../services/submission-acceptance.js";
 import { revokeLiveUploadReviewDraftCapabilities } from "../../services/upload-review-drafts.js";
+import { invalidateUserApiKeys } from "../../services/api-keys.js";
 import { config } from "../../config.js";
 import {
   BountyKind,
@@ -718,6 +719,15 @@ export async function adminRoutes(app: FastifyInstance) {
       });
       return { updated: u, revokedUploadDrafts };
     });
+
+    // A suspended account must stop authenticating NOW, not when the
+    // verified-key cache entry happens to expire. The key rows are left alone
+    // on purpose, matching the upload-draft reasoning above only in spirit:
+    // there, capabilities are permanently revoked; here, reinstatement should
+    // restore access without the owner minting new credentials. That makes
+    // `verifyApiKey`'s account-status check the only barrier -- and a cache
+    // hit is precisely what skips it. After the commit, never inside it.
+    await invalidateUserApiKeys(id);
 
     // Never echo the raw Prisma row: it carries `passwordHash`, `googleId` and
     // other internals. QA on 2026-09-05 found this route returning the bcrypt

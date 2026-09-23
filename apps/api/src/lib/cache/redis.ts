@@ -34,6 +34,15 @@ export class RedisCache implements CacheProvider {
     private logger: Logger = { warn: () => {} },
   ) {
     this.redis = new Redis(redisUrl, {
+      // Every key this application writes is namespaced. Production's Redis is
+      // shared with another product on the same host, and neither application
+      // set a prefix before -- so both were writing into one flat keyspace on
+      // database 0 and a collision would have served one application's cached
+      // value to the other. The hashes we key on make that vanishingly
+      // unlikely in practice, but "unlikely" is not a boundary; this is.
+      // Changing it invalidates nothing that matters: the cache is best-effort,
+      // so the only effect is one cold start.
+      keyPrefix: "databounty:",
       // The breaker owns retry policy; ioredis must not queue commands
       // forever while disconnected or block on its own long retries.
       maxRetriesPerRequest: 1,
