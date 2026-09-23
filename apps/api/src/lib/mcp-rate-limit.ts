@@ -3,15 +3,33 @@
 import { createHash } from "node:crypto";
 import { positiveIntEnv } from "./env-int.js";
 import { prisma } from "./prisma.js";
+import { cache } from "./cache/index.js";
 
 /**
  * Per-credential request limiter, independent of and in addition to the global
  * per-IP limit in app.ts.
  *
- * One-minute buckets keyed by (credential, windowStart) in `api_key_rate_buckets`.
- * Bucketed rather than a true sliding window — ±1-bucket accuracy is the
- * accepted tradeoff for not requiring Redis, which this service does not have a
- * client abstraction for.
+ * One-minute buckets keyed by (credential, windowStart). Bucketed rather than a
+ * true sliding window — ±1-bucket accuracy is the accepted tradeoff.
+ *
+ * WHERE THE COUNTER LIVES. Two backings, chosen per call site rather than
+ * globally, because the two kinds of limit here have genuinely different
+ * requirements:
+ *
+ *  - The per-credential request limiter runs on EVERY authenticated request.
+ *    Measured on production 2026-09-23 that was ~880 writes per four minutes
+ *    and, once API-key verification was cached, the single largest remaining
+ *    write on the hot path. It counts in Redis when one is available.
+ *
+ *  - The token-endpoint limiters are a security control, not a performance
+ *    guard — they are what stopped a dead-refresh-token replay loop in
+ *    production. They are also low volume. They stay in Postgres
+ *    unconditionally, because Redis may evict a key under memory pressure (the
+ *    production instance is shared with another application) and a silently
+ *    reset security limit is a worse failure than a few extra writes.
+ *
+ * Both paths fail SAFE rather than open: if the counter is unavailable the
+ * request still gets counted, just in the other store.
  *
  * The bucket key is a plain string so BOTH credential kinds share the table:
  *   - API keys       → the ApiKey row id
@@ -47,9 +65,22 @@ export interface RateLimitResult {
  * CONFLICT DO UPDATE, so concurrent requests from the same credential cannot
  * both read a stale count.
  */
-export async function checkAndIncrement(bucketKey: string, limitOverride?: number): Promise<RateLimitResult> {
-  const limit = limitOverride ?? limitPerMin();
-  const start = currentWindowStart();
+/**
+ * The Redis key for one bucket. The window start is IN the key, so a bucket can
+ * never be reused by the next window and the TTL only has to outlive its own.
+ */
+function bucketCacheKey(bucketKey: string, start: Date): string {
+  return `ratelimit:v1:${bucketKey}:${start.getTime()}`;
+}
+
+/** Comfortably longer than a window, so a bucket opened at the very start of
+ *  one is still counting at the end of it, and is gone well before the key
+ *  could ever be confused with a later window's. */
+const BUCKET_TTL_SEC = (WINDOW_MS / 1000) * 2;
+
+async function incrementInDatabase(bucketKey: string, start: Date): Promise<number> {
+  // A single INSERT … ON CONFLICT DO UPDATE, so concurrent requests from the
+  // same credential cannot both read a stale count.
   const rows = await prisma.$queryRaw<{ count: number }[]>`
     INSERT INTO api_key_rate_buckets (key_id, window_start, count)
     VALUES (${bucketKey}, ${start}, 1)
@@ -57,7 +88,35 @@ export async function checkAndIncrement(bucketKey: string, limitOverride?: numbe
     DO UPDATE SET count = api_key_rate_buckets.count + 1
     RETURNING count
   `;
-  const count = rows[0]?.count ?? 1;
+  return rows[0]?.count ?? 1;
+}
+
+/**
+ * Atomically increments this credential's counter for the current window and
+ * reports whether the request is within the limit.
+ *
+ * `durable: true` forces the Postgres counter regardless of what cache is
+ * configured — see the note at the top of this file on why the token-endpoint
+ * limits use it and the per-request limit does not.
+ */
+export async function checkAndIncrement(
+  bucketKey: string,
+  limitOverride?: number,
+  options?: { durable?: boolean },
+): Promise<RateLimitResult> {
+  const limit = limitOverride ?? limitPerMin();
+  const start = currentWindowStart();
+
+  let count: number | null = null;
+  if (!options?.durable) {
+    // null means the driver has no atomic counter (cache off) or Redis is
+    // unreachable behind its circuit breaker. Either way the request must
+    // still be counted, so fall through to the database rather than letting
+    // the limit silently stop applying.
+    count = await cache.incr(bucketCacheKey(bucketKey, start), BUCKET_TTL_SEC);
+  }
+  if (count === null) count = await incrementInDatabase(bucketKey, start);
+
   const retryAfterSec = Math.max(1, Math.ceil((start.getTime() + WINDOW_MS - Date.now()) / 1000));
   return {
     allowed: limit <= 0 || count <= limit,
@@ -120,12 +179,12 @@ export async function checkTokenEndpoint(input: {
 
   const clientLimit = tokenLimitPerMin();
   if (clientLimit > 0) {
-    results.push(await checkAndIncrement(`mcp-token:client:${digest(input.clientId)}`, clientLimit));
+    results.push(await checkAndIncrement(`mcp-token:client:${digest(input.clientId)}`, clientLimit, { durable: true }));
   }
 
   const replayLimit = tokenReplayLimitPerMin();
   if (input.presentedSecret && replayLimit > 0) {
-    results.push(await checkAndIncrement(`mcp-token:grant:${digest(input.presentedSecret)}`, replayLimit));
+    results.push(await checkAndIncrement(`mcp-token:grant:${digest(input.presentedSecret)}`, replayLimit, { durable: true }));
   }
 
   // Report the first refusal, so `Retry-After` describes the bucket that
