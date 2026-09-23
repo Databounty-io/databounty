@@ -277,6 +277,7 @@ export async function adminIssueRoutes(app: FastifyInstance) {
       await notifyUser({
         userId: issue.reporterUserId,
         type: "agent_issue.info_requested",
+        eventKey: `agent_issue.info_requested:${id}:${updated.version}`,
         title: "More information needed on your report",
         body: parsed.data.question,
         entityType: "AgentIssue",
@@ -355,6 +356,7 @@ export async function adminIssueRoutes(app: FastifyInstance) {
       await notifyUser({
         userId: issue.reporterUserId,
         type: "agent_issue.status_changed",
+        eventKey: `agent_issue.status_changed:${id}:${updated.version}`,
         title: `Your report was marked ${status.replace(/_/g, " ")}`,
         body: reason ?? "No additional detail was recorded.",
         entityType: "AgentIssue",

@@ -7,6 +7,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isLegacyRequest } from "@modelcontextprotocol/server";
 import { toWebRequest } from "@modelcontextprotocol/node";
 import { config } from "../config.js";
+import { positiveIntEnv } from "../lib/env-int.js";
+import { checkTokenEndpoint } from "../lib/mcp-rate-limit.js";
 import { SESSION_COOKIE, ADMIN_SESSION_COOKIE } from "../lib/session-cookie.js";
 import { verifyApiKey } from "../services/api-keys.js";
 import { createMcpServer } from "../mcp/transport.js";
@@ -60,10 +62,47 @@ import { isClientIdMetadataUrl, isLoopbackRedirectUri } from "../services/mcp-cl
 
 const MCP_SESSION_TTL_MS = 30 * 60 * 1000;
 
-const sessions = new Map<
-  string,
-  { transport: StreamableHTTPServerTransport; server: McpServer; credentialBinding: string; expiresAt: number }
->();
+/**
+ * How often idle sessions are swept when NO traffic is arriving. Expiry used to
+ * be checked only inside `handleMcp`, which meant a client that stopped sending
+ * requests — or one stuck in a failing auth/refresh loop — left its transport
+ * resident until the next unrelated request happened to come in. Set to 0 to
+ * go back to request-driven-only sweeping.
+ */
+const MCP_SESSION_SWEEP_INTERVAL_MS = positiveIntEnv("MCP_SESSION_SWEEP_INTERVAL_MS", 60_000, true);
+
+/**
+ * Upper bound on concurrent sessions per credential, and across the process.
+ *
+ * A session is only ever created by a POST that carries no id this process
+ * recognises, so a client that loses its session id (restart, a sweep it did
+ * not see, a broken refresh loop that re-handshakes every attempt) mints a new
+ * one on every single request. Without a cap that is unbounded: each session
+ * pins a `StreamableHTTPServerTransport`, an `McpServer` with the whole tool
+ * catalog registered, the open response socket underneath it, AND a keep-alive
+ * `setInterval` per live SSE stream (see `webStandardStreamableHttp.js`) that
+ * goes on firing at a socket nobody is reading. Observed in production
+ * 2026-09-22 as hundreds of held connections that only a container restart
+ * cleared.
+ *
+ * Eviction is least-recently-used, NOT oldest-created: `expiresAt` is pushed
+ * forward on every request, so ordering by it ascending puts the genuinely
+ * idle sessions first and leaves a long-lived busy one alone. Evicting by
+ * creation time would have killed the most active session in the set, and
+ * could have aborted a request still streaming on it.
+ */
+const MCP_MAX_SESSIONS_PER_CREDENTIAL = positiveIntEnv("MCP_MAX_SESSIONS_PER_CREDENTIAL", 8);
+const MCP_MAX_SESSIONS_TOTAL = positiveIntEnv("MCP_MAX_SESSIONS_TOTAL", 500);
+
+type McpSession = {
+  transport: StreamableHTTPServerTransport;
+  server: McpServer;
+  credentialBinding: string;
+  /** Last activity + TTL. Refreshed on every request, so it doubles as the LRU key. */
+  expiresAt: number;
+};
+
+const sessions = new Map<string, McpSession>();
 
 /**
  * The raw bearer secret is never retained in the session map. Binding a session
@@ -79,9 +118,58 @@ function credentialBinding(input: {
   return createHmac("sha256", config.sessionSecret).update(principal).digest("hex");
 }
 
+/**
+ * Drop a session AND release what it holds.
+ *
+ * Deleting the map entry on its own was the leak: the entry became
+ * unreachable, but the transport kept its hijacked response socket open, so
+ * the socket, the transport and the `McpServer` behind it stayed alive for the
+ * life of the process. `transport.close()` is what actually ends the stream;
+ * the map delete here makes the removal synchronous rather than waiting on the
+ * `onclose` callback, and `onclose` deleting an already-absent key is a no-op.
+ *
+ * Never allowed to throw: a transport whose socket is already gone must not
+ * abort a sweep that still has other sessions to reap.
+ */
+function closeSession(id: string, entry: McpSession): void {
+  sessions.delete(id);
+  void Promise.resolve()
+    .then(() => entry.transport.close())
+    .catch(() => {});
+  void Promise.resolve()
+    .then(() => entry.server.close())
+    .catch(() => {});
+}
+
 function pruneExpiredSessions(now = Date.now()) {
   for (const [id, entry] of sessions) {
-    if (entry.expiresAt <= now) sessions.delete(id);
+    if (entry.expiresAt <= now) closeSession(id, entry);
+  }
+}
+
+/**
+ * Evict oldest-first until this credential is under its cap and the process is
+ * under the global one. Runs immediately before a new session is admitted, so
+ * the caps are on sessions that already exist and the incoming handshake
+ * always gets its slot.
+ */
+function enforceSessionCaps(binding: string): void {
+  // Ascending `expiresAt` == least recently used first (see the cap constants).
+  const idlestFirst = (entries: [string, McpSession][]) =>
+    entries.sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+
+  const mine = idlestFirst([...sessions].filter(([, e]) => e.credentialBinding === binding));
+  while (mine.length >= MCP_MAX_SESSIONS_PER_CREDENTIAL) {
+    const victim = mine.shift();
+    if (!victim) break;
+    closeSession(victim[0], victim[1]);
+  }
+
+  const all = idlestFirst([...sessions]);
+  while (sessions.size >= MCP_MAX_SESSIONS_TOTAL) {
+    const victim = all.shift();
+    if (!victim) break;
+    if (sessions.has(victim[0])) closeSession(victim[0], victim[1]);
   }
 }
 
@@ -223,22 +311,68 @@ async function handleMcp(req: FastifyRequest, reply: FastifyReply) {
   if (entry && entry.credentialBinding !== binding) {
     return reply.code(401).send({ error: "invalid_token", message: "MCP session belongs to a different credential." });
   }
+  // A session id this process does not recognise — swept for idleness, evicted
+  // by the caps, terminated, or left over from a previous container.
+  //
+  // MCP 2025-06-18, Streamable HTTP §Session Management: "The server MAY
+  // terminate the session at any time, after which it MUST respond to requests
+  // containing that session ID with HTTP 404 Not Found", and on 404 the client
+  // "MUST start a new session by sending a new InitializeRequest without a
+  // session ID attached". 404 is therefore the signal that makes a client
+  // recover; the 400 this used to return is not, and a compliant client had no
+  // instruction to re-initialize — it just retried the dead id.
+  //
+  // Worse, the old order let a POST fall through to session creation while the
+  // client was still presenting the stale id. The SDK rejects a non-initialize
+  // request on a transport that has not been initialized, so the client got an
+  // error AND the freshly built transport stayed behind as an orphan — a new
+  // one on every retry. That is the amplifier that turned one stuck client
+  // into hundreds of held connections. Answering 404 before the creation
+  // branch removes the path entirely.
+  if (sessionId && !entry) {
+    return reply
+      .code(404)
+      .send({ error: "session_not_found", message: "MCP session is unknown or expired. Start a new session." });
+  }
   if (req.method === "POST" && !entry) {
+    // Before admitting another one. A client that mints a session per request
+    // would otherwise grow this map without limit — see the cap constants.
+    enforceSessionCaps(binding);
+    let session: McpSession;
     let server: McpServer;
     const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
+      // Fires from inside `handleRequest` at the foot of this function, long
+      // after `session` is assigned. Registering THAT object rather than a
+      // fresh copy matters: the request path refreshes `entry.expiresAt`, and
+      // with two separate objects the map's copy never saw it — so the LRU key
+      // the caps and the sweep both read would have gone stale the moment a
+      // session was created.
       onsessioninitialized: (id) => {
-        sessions.set(id, { transport, server, credentialBinding: binding, expiresAt: Date.now() + MCP_SESSION_TTL_MS });
+        sessions.set(id, session);
       },
     });
     server = createMcpServer({ scopeChallenge: (input) => bearerChallenge({ error: "insufficient_scope", ...input }) });
-    entry = { transport, server, credentialBinding: binding, expiresAt: now + MCP_SESSION_TTL_MS };
+    session = { transport, server, credentialBinding: binding, expiresAt: now + MCP_SESSION_TTL_MS };
+    entry = session;
     transport.onclose = () => {
       if (transport.sessionId) sessions.delete(transport.sessionId);
     };
-    await server.connect(transport);
+    try {
+      await server.connect(transport);
+    } catch (err) {
+      // `onsessioninitialized` has not fired, so nothing is in the map and the
+      // sweep will never see this transport — release it here or it is the leak
+      // this change exists to close, just on the failure path.
+      closeSession("", session);
+      throw err;
+    }
   }
-  if (!entry) return reply.code(400).send({ error: "invalid_session", message: "MCP session is missing or expired." });
+  // Reached only with NO session id on a non-POST. Spec §Session Management:
+  // "Servers that require a session ID SHOULD respond to requests without an
+  // Mcp-Session-Id header (other than initialization) with HTTP 400 Bad
+  // Request" — so 400, not 404, is correct for this one case.
+  if (!entry) return reply.code(400).send({ error: "invalid_session", message: "MCP session id is required." });
   entry.expiresAt = now + MCP_SESSION_TTL_MS;
 
   const principal = apiKey
@@ -365,6 +499,18 @@ async function handleMcpByEra(req: FastifyRequest, reply: FastifyReply) {
 }
 
 export async function mcpRoutes(app: FastifyInstance) {
+  // Sweep on a timer, not only on the next inbound request. `unref()` so an
+  // idle process can still exit; `onClose` both stops the timer and releases
+  // every live session, so a SIGTERM shutdown does not leave sockets hanging.
+  if (MCP_SESSION_SWEEP_INTERVAL_MS > 0) {
+    const sweep = setInterval(() => pruneExpiredSessions(), MCP_SESSION_SWEEP_INTERVAL_MS);
+    sweep.unref();
+    app.addHook("onClose", async () => {
+      clearInterval(sweep);
+      for (const [id, entry] of sessions) closeSession(id, entry);
+    });
+  }
+
   const authorizationServerMetadata = async () => ({
     issuer: authorizationServerUrl(),
     authorization_endpoint: `${authorizationServerUrl()}/oauth/authorize`,
@@ -569,6 +715,24 @@ export async function mcpRoutes(app: FastifyInstance) {
       const clientId = body.client_id;
       if (!clientId || body.client_secret) {
         throw new McpOAuthError("invalid_client", "Only public PKCE clients are supported.", 401);
+      }
+      // Before any grant work, and before any database read that a caller
+      // could drive in a loop. See `checkTokenEndpoint` for why the per-IP
+      // limiter does not cover this endpoint and why one of the two buckets is
+      // keyed on the presented secret.
+      const throttled = await checkTokenEndpoint({
+        clientId,
+        presentedSecret: body.refresh_token ?? body.code,
+      });
+      if (throttled) {
+        reply.header("Retry-After", String(throttled.retryAfterSec));
+        // `slow_down` is a registered OAuth error code (RFC 8628 §3.5) and is
+        // the one a client can act on: back off and retry. A bare 429 with no
+        // OAuth error body reads to most clients as an unclassified failure.
+        return reply.code(429).send({
+          error: "slow_down",
+          error_description: `Too many token requests: ${throttled.limit}/minute. Retry in ${throttled.retryAfterSec}s.`,
+        });
       }
       if (body.grant_type === "authorization_code") {
         if (!body.code || !body.code_verifier || !body.redirect_uri) {

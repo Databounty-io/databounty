@@ -49,6 +49,8 @@ import { runWatchdogSweep } from "./services/watchdog.js";
 import { refreshCommunityQualityMetricsSnapshot } from "./services/admin-quality-metrics.js";
 import { releaseOverdueAudits } from "./services/audit-lifecycle.js";
 import { releaseDueKarmaHolds } from "./services/karma-holds.js";
+import { pruneOldRateBuckets } from "./lib/mcp-rate-limit.js";
+import { runUserProvisionJob } from "./services/user-provisioning.js";
 import { cleanupMcpOAuth } from "./services/mcp-oauth.js";
 import { runCommunityPublishJob, runCommunityUnpublishJob } from "./services/community-publish.js";
 import { runHarnessProofJob, PROOF_LEASE_MS, type HarnessProofJobPayload } from "./routes/v1/admin-harness.js";
@@ -92,6 +94,11 @@ import { config } from "./config.js";
 import { configuredProviders } from "./services/execution-providers/provider-order.js";
 
 const POLL_INTERVAL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 2000);
+
+/** See the throttle at the job-loop heartbeat write for why this is not the
+ *  poll interval. Must stay well under `heartbeatStaleAfterMs(POLL_INTERVAL_MS)`. */
+const JOB_LOOP_HEARTBEAT_MIN_INTERVAL_MS = 40_000;
+let lastHeartbeatAt = 0;
 
 /**
  * Lease derived from the worst-case tick, not a flat guess: a `validation.run`
@@ -160,6 +167,7 @@ const LEASE_BY_TYPE: Record<JobType, number> = {
   "agent_issue.escalation_sweep": DEFAULT_LEASE_MS,
   "agent_issue.escalate": DEFAULT_LEASE_MS,
   "agent_issue.notify_canonical_outcome": DEFAULT_LEASE_MS,
+  "user.provision": DEFAULT_LEASE_MS,
   "leaderboard.rank_check": DEFAULT_LEASE_MS,
 };
 
@@ -327,6 +335,11 @@ async function handle(job: JobEnvelope): Promise<void> {
       await runCanonicalOutcomeFanout(payload.canonicalIssueId, payload.version);
       return;
     }
+    case "user.provision": {
+      const payload = job.payload as { userId: string };
+      await runUserProvisionJob(payload.userId);
+      return;
+    }
     case "leaderboard.rank_check": {
       const payload = job.payload as { userId: string };
       await runLeaderboardRankCheck(payload.userId);
@@ -401,7 +414,18 @@ async function runJobQueueLoop(): Promise<void> {
     }
     // After the pass, not before: a heartbeat written before the work would
     // report health for a tick that then threw.
-    await touchWorkerHeartbeat(JOB_LOOP_HEARTBEAT, POLL_INTERVAL_MS);
+    //
+    // Throttled, because this loop ticks every 2s and the heartbeat is an
+    // UPSERT: writing on every pass was 43,200 writes/day, ~95% of them while
+    // idle and saying nothing new. The watchdog's staleness window for this
+    // worker is `max(3 x 2000, 120_000)` = 120s, so a write every 40s is
+    // three refreshes inside the window it is judged by — the same detection
+    // fidelity for a twentieth of the writes. A tick that THREW still skips
+    // the write, so a wedged loop goes stale exactly as before.
+    if (Date.now() - lastHeartbeatAt >= JOB_LOOP_HEARTBEAT_MIN_INTERVAL_MS) {
+      await touchWorkerHeartbeat(JOB_LOOP_HEARTBEAT, POLL_INTERVAL_MS);
+      lastHeartbeatAt = Date.now();
+    }
     if (!drained) {
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
@@ -504,6 +528,20 @@ export function startBackgroundWorkers(): void {
     name: "mcp-oauth-cleanup",
     runOnce: () => cleanupMcpOAuth(),
     intervalMs: Number(process.env.MCP_OAUTH_CLEANUP_INTERVAL_MS ?? 300_000),
+  }).start();
+
+  // Rate-limit buckets. `pruneOldRateBuckets` has existed since the limiter
+  // was written, documented as "periodic cleanup so the table doesn't grow
+  // unbounded" — but nothing ever called it, so it never ran. Production had
+  // 97,220 rows / 18 MB of expired one-minute buckets going back to the day
+  // the limiter shipped (verified 2026-09-22). Each bucket is dead the moment
+  // its window passes; the function keeps a 10-window grace and deletes the
+  // rest. Wiring it matters more now that `checkTokenEndpoint` adds a bucket
+  // per client id AND per presented grant secret, which raises the row rate.
+  createHeartbeatWorker({
+    name: "rate-bucket-prune",
+    runOnce: () => pruneOldRateBuckets(),
+    intervalMs: Number(process.env.RATE_BUCKET_PRUNE_INTERVAL_MS ?? 300_000),
   }).start();
 
   /* ==========================================================================

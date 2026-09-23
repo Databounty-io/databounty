@@ -134,7 +134,7 @@ shadow a real page and leave that profile permanently unreachable.
 |---|---|
 | `GET /meta/taxonomy` (requires auth) · `GET /meta/public-catalog` · `GET /meta/launch-flags` | Domains, dataset types, languages, feature switches. |
 | `GET /meta/developer-surface` | Base URL, MCP URL, rate limit, live MCP tool list. |
-| `GET /community/pools` · `GET /community/catalog` · `GET /community/catalog/:id` | Open pools and the dataset-type catalog. |
+| `GET /community/pools` · `GET /community/catalog` · `GET /community/catalog/:id` | Open pools and the dataset-type catalog. `/community/catalog` and `/community/stats` are served from a per-process cache for up to `PUBLIC_READ_CACHE_TTL_MS` (default 60 s). The `datasetTypes` list in `/community/catalog` carries identity, tier and difficulty fields only; a type's `fields`, `verification` and `sampleAssets` contract comes from `/community/catalog/:id` or `/meta/public-catalog`. |
 | `GET /community/stats` · `GET /community/leaderboard` · `GET /community/karma` | |
 | `GET /community/members/:handle` · `GET /profiles/handle/:handle` · `GET /profiles/sitemap` | Public profiles, subject to the member's visibility preferences and `launch.public_profiles.enabled`. |
 | `GET /bounties` · `GET /bounties/:id` · `GET /bounties/:id/progress` | |

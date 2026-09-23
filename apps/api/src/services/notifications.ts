@@ -382,8 +382,26 @@ export async function notifyUser(params: {
    * notification + its delivery intents, just not with the business change). */
   tx?: DbClient;
 }) {
-  const eventKey =
-    params.eventKey ?? `${params.type}:${params.entityId ?? params.userId}:${Date.now()}`;
+  // v1: `const suffix = input.keySuffix ?? input.entityId ?? input.userId;`
+  // then `eventKey: ${type}:${suffix}` (services/notifications.ts:766). NO
+  // timestamp.
+  //
+  // This port appended `:${Date.now()}`, which made every key unique and so
+  // silently disabled the whole idempotency mechanism below — the advisory
+  // lock and the `userId_eventKey` upsert are correct, they were just never
+  // given a stable key to work with. Measured on production 2026-09-22: 4,241
+  // notifications carrying a 13-digit epoch suffix, and real duplicates in the
+  // inbox — `admin.system_alert` +235 rows, `admin.system_recovered` +225,
+  // `community.request_status_changed` +50, `submission.accepted` +12.
+  //
+  // The grain is therefore (type, entity). An event that can legitimately
+  // happen AGAIN for the same entity — a submission re-validated after a
+  // revision, an issue changing status twice — must pass an explicit
+  // `eventKey` that says which occurrence it is, exactly as v1 does with
+  // `keySuffix: \`validation:${submission.revisionCount}\``. Callers that do
+  // not are asserting "once per entity, ever", which is what the default now
+  // enforces instead of quietly waiving.
+  const eventKey = params.eventKey ?? `${params.type}:${params.entityId ?? params.userId}`;
   const run = (db: DbClient) =>
     notify(db, {
       userId: params.userId,
@@ -721,24 +739,63 @@ export async function markAllNotificationsRead(userId: string) {
   });
 }
 
-export async function seedEmailNotificationChannel(userId: string, email: string) {
+/**
+ * Create (or repair) a user's email delivery channel. Idempotent, and safe to
+ * call on every sign-in — which is exactly how it is meant to be used.
+ *
+ * GUARDED ON `emailVerifiedAt`, matching v1 (`services/notifications.ts:640`).
+ * This port previously took a bare `(userId, email)` and wrote
+ * `verified: true, verifiedAt: new Date()` unconditionally — including from
+ * `POST /auth/signup`, where the address has provably not been verified yet.
+ * That is a delivery vector v1 deliberately closed: a mistyped or
+ * someone-else's address entered at signup received real platform mail. The
+ * seed now belongs at the moment verification actually happens, so this
+ * returns null for an unverified account instead of manufacturing a
+ * verification that never took place.
+ *
+ * SELF-HEAL IS THE POINT. v1 had no structural guarantee that a channel
+ * exists either — its dispatcher also reads `notification_channels` and never
+ * falls back to `users.email`. What v1 had, and this port had dropped, is five
+ * idempotent call sites (`routes/v1/auth.ts` 315, 329, 445, 479, 802) covering
+ * OAuth sign-in, invite acceptance and email verification, so an account that
+ * somehow lacked a channel got one the next time it was seen. Without them a
+ * user created by any path but the two signup routes was permanently mute:
+ * `createDeliveryIntents` finds no channel, returns 0, and records nothing.
+ * Measured on production 2026-09-22 — 60 of 167 users with no channel at all,
+ * 373 of 1,596 daily digests never delivered to anyone.
+ *
+ * The `update` branch deliberately re-asserts reachability
+ * (`address`/`connected`/`verified`/`verifiedAt`) but NOT `deliver` or
+ * `deliverDigest`. v1's blanket `deliver: true` re-assert means a user who
+ * turned email delivery off has it silently switched back on at their next
+ * sign-in; that is a v1 bug, not a behaviour worth porting. Repair the
+ * channel's existence, never the user's choice about it.
+ */
+export async function seedEmailNotificationChannel(user: {
+  id: string;
+  email: string | null;
+  emailVerifiedAt: Date | null;
+}) {
+  if (!user.email || !user.emailVerifiedAt) return null;
+  const address = user.email.toLowerCase();
   try {
-    await prisma.notificationChannel.upsert({
-      where: { userId_channel: { userId, channel: ChannelKind.email } },
+    return await prisma.notificationChannel.upsert({
+      where: { userId_channel: { userId: user.id, channel: ChannelKind.email } },
       create: {
-        userId,
+        userId: user.id,
         channel: ChannelKind.email,
-        address: email.toLowerCase(),
+        address,
         connected: true,
         verified: true,
-        verifiedAt: new Date(),
+        verifiedAt: user.emailVerifiedAt,
         deliver: true,
         deliverDigest: true,
       },
-      update: { address: email.toLowerCase() },
+      update: { address, connected: true, verified: true, verifiedAt: user.emailVerifiedAt },
     });
   } catch (err) {
-    console.error(`[notifications] failed to seed email channel for user ${userId}:`, err);
+    console.error(`[notifications] failed to seed email channel for user ${user.id}:`, err);
+    return null;
   }
 }
 
@@ -1085,22 +1142,39 @@ export async function flushDigests(maxUsers = 100, now = new Date()) {
       });
       if (alreadyFlushed) return false;
 
-      const rows = await tx.notification.findMany({
-        where: {
-          userId: group.userId,
-          status: NotificationStatus.digesting,
-          // Never resurrect a week-old backlog into today's digest.
-          createdAt: { gte: floor },
-        },
+      // Read EVERY digesting row, then split. The window decides what gets
+      // SUMMARISED; it must not decide what gets CLAIMED.
+      //
+      // Applying `createdAt: { gte: floor }` to this query — which is what it
+      // used to do — meant a row older than the window was never summarised
+      // AND never claimed, so it stayed `digesting` for good. Worse, the
+      // `groupBy` above has no floor, so that user reappeared in the
+      // 100-recipient window on every single tick with nothing flushable in
+      // it, permanently occupying a slot under `orderBy: userId asc`. That is
+      // precisely the head-of-line blocking the loop below documents guarding
+      // against for a recipient that THROWS — this variant just did it
+      // silently, by returning false forever.
+      const all = await tx.notification.findMany({
+        where: { userId: group.userId, status: NotificationStatus.digesting },
         orderBy: { createdAt: "asc" },
       });
-      if (rows.length === 0) return false;
+      if (all.length === 0) return false;
+
+      // Never resurrect a week-old backlog into today's digest — but retire it
+      // rather than leaving it to block the queue. Stale rows are claimed to
+      // `done` alongside the rest and simply left out of the payload.
+      const rows = all.filter((row) => row.createdAt >= floor);
 
       const claimed = await tx.notification.updateMany({
-        where: { id: { in: rows.map((r) => r.id) }, status: NotificationStatus.digesting },
+        where: { id: { in: all.map((r) => r.id) }, status: NotificationStatus.digesting },
         data: { status: NotificationStatus.done },
       });
       if (claimed.count === 0) return false;
+
+      // Everything this recipient had was stale. The backlog is now retired
+      // (the claim above committed), so they will not be back next tick, but
+      // there is nothing worth mailing.
+      if (rows.length === 0) return false;
 
       const payload = buildDigestPayload(rows, notificationHref, schedule.day, settings.digestTimeZone);
       await notify(tx, {

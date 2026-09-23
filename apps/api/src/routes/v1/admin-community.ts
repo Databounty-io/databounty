@@ -3,6 +3,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
+import { clearPublicReadCache } from "../../lib/public-read-cache.js";
 import { requireRole, ADMIN_AND_MEMBER, ADMIN_AND_ABOVE_READONLY, type AuthedUser } from "../../lib/rbac.js";
 import { writeAuditLog } from "../../lib/audit-log.js";
 import { attestPublication, enqueueCommunityPublish, enqueueCommunityUnpublish } from "../../services/community-publish.js";
@@ -539,6 +540,13 @@ export async function adminCommunityRoutes(app: FastifyInstance) {
           "Raise karma.rules.acceptedItem in the admin karma editor if a higher rate is genuinely intended."
       );
     }
+    // The public catalog is cached for PUBLIC_READ_CACHE_TTL_MS. Without this,
+    // an admin who just minted a pool would not see it on the public page for
+    // up to a minute and would reasonably conclude the mint failed. v1
+    // invalidates on write for the same reason; this port shipped the function
+    // and never called it outside tests.
+    clearPublicReadCache();
+
     const { bounty } = result;
 
     // Same v1-parity new-work watch alert as /community/requests/:id/implement
@@ -1033,6 +1041,13 @@ export async function adminCommunityRoutes(app: FastifyInstance) {
     // JSON.stringify throws ("Do not know how to serialize a BigInt"),
     // turning a mint that actually SUCCEEDED in the DB into a 500 the admin
     // sees as a failure (risking a confused retry / duplicate mint attempt).
+    // The public catalog is cached for PUBLIC_READ_CACHE_TTL_MS. Without this,
+    // an admin who just minted a pool would not see it on the public page for
+    // up to a minute and would reasonably conclude the mint failed. v1
+    // invalidates on write for the same reason; this port shipped the function
+    // and never called it outside tests.
+    clearPublicReadCache();
+
     const { bounty } = result;
 
     // Fire the new-work watch alert only on the transaction that ACTUALLY

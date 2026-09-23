@@ -313,6 +313,12 @@ request will share one bucket keyed on the load balancer's address.
 | `RATELIMIT_GLOBAL_MAX` ✱ | plugin default | Global per-IP request ceiling, read in `app.ts`. |
 | `MCP_RATE_LIMIT_PER_MIN` ✱ | `300` | Per-credential MCP calls per minute. Backed by the `api_key_rate_buckets` table, so this one **is** shared across instances (`lib/mcp-rate-limit.ts`). |
 | `API_KEY_RATE_LIMIT_PER_MIN` ✱ | `300` | Fallback for the above when `MCP_RATE_LIMIT_PER_MIN` is unset. |
+| `MCP_TOKEN_RATE_LIMIT_PER_MIN` ✱ | `60` | Token requests per minute per `client_id` on `POST /mcp/oauth/token` (`lib/mcp-rate-limit.ts`). That endpoint carries no `Authorization` header — it is a public PKCE client — so the per-credential limiter in `app.ts` never sees it, and the per-IP fallback is useless behind a proxy with `TRUST_PROXY` unset. `0` disables. |
+| `MCP_TOKEN_REPLAY_LIMIT_PER_MIN` ✱ | `5` | Token requests per minute keyed on the *presented* authorization code or refresh token, hashed. Rotation gives a healthy client a new secret each time, so it never nears this; a client replaying one dead token is throttled within seconds. Refused if either this or the per-`client_id` bucket is exceeded, answered `429` with an RFC 8628 `slow_down` body. `0` disables. |
+| `RATE_BUCKET_PRUNE_INTERVAL_MS` ✱ | `300000` | How often expired one-minute rate-limit buckets are deleted (`pruneOldRateBuckets`, 10-window grace). Previously never scheduled at all, so the table grew unbounded. |
+| `MCP_SESSION_SWEEP_INTERVAL_MS` ✱ | `60000` | How often idle sessionful-MCP transports are closed when no request is arriving (`routes/mcp.ts`). Expiry is also checked on each request; this timer is what reaps a client that went silent. `0` disables the timer and restores request-driven-only sweeping. |
+| `MCP_MAX_SESSIONS_PER_CREDENTIAL` ✱ | `8` | Concurrent sessionful-MCP sessions one API key or OAuth grant may hold. Oldest are closed first when a new handshake arrives. A client that loses its session id mints a new session per request, so this is the bound on that. |
+| `MCP_MAX_SESSIONS_TOTAL` ✱ | `500` | Process-wide ceiling on live MCP sessions, evicted oldest-first. Backstop for many credentials each under the per-credential cap. |
 
 ### Background workers and sweeps
 
@@ -341,6 +347,23 @@ shorter, it only checks more often.
 | `PROFILE_SOURCE_SWEEP_INTERVAL_MS` ✱ | `600000` | Expires stale credential-connect state tokens. |
 | `MCP_OAUTH_CLEANUP_INTERVAL_MS` ✱ | `300000` | Deletes expired MCP OAuth grants/codes. |
 | `ADMIN_METRICS_SNAPSHOT_INTERVAL_MS` ✱ | `300000` | Admin overview metric snapshot. |
+
+### Public read cache
+
+Read in `lib/public-read-cache.ts`. The two unauthenticated read routes the landing site renders from —
+`GET /v1/community/catalog` and `GET /v1/community/stats` — are cached in-process, per validated query,
+for this many milliseconds. The cached body never depends on the caller (no headers, cookies or session
+go into the key), errors are never cached, and concurrent misses on one key share one computation.
+Added 2026-09-22 after those two routes were measured as 85%+ of a steady ~10 GB/day of Supabase egress on
+both deployments, driven by the landing container's own health probe re-rendering the homepage every
+15 seconds rather than by visitors.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `CACHE_DRIVER` ✱ | `noop` | Which cache driver backs `lib/cache/`: `noop`, `memory` or `redis`. An invalid value throws at boot rather than silently leaving the cache off. `noop` means the application behaves exactly as it did before the layer existed — every read a miss, every write a no-op — which is what makes enabling it safe. `redis` builds an in-process L1 in front of Redis; with `REDIS_URL` empty it logs and falls back to `noop`. |
+| `REDIS_URL` ✱ | *(empty)* | Connection string used when `CACHE_DRIVER=redis`. On the dev deployment this is `redis://redis:6379` — an internal Docker hostname, not published, so no credentials. The driver fails open behind a circuit breaker: if Redis is unreachable the app degrades to the database path instead of waiting out timeouts. |
+| `PUBLIC_READ_CACHE_TTL_MS` ✱ | `60000` (`0` under `NODE_ENV=test`) | Maximum age of a cached public catalog/stats body. `0` bypasses the cache; the integration suite relies on that so a write is visible on the next read. Nothing downstream expects fresher than this — the landing refreshes itself every two minutes. |
+
 
 ### Tooling only
 

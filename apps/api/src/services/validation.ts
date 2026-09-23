@@ -289,6 +289,7 @@ export async function runSubmissionValidation(submissionId: string, validationAt
         await notifyUser({
           userId: sub.contributorUserId,
           type: "submission.rejected",
+          eventKey: `submission.rejected:${sub.id}:validation:${sub.revisionCount}`,
           title: "Pool filled before your submission could be counted",
           body: `"${sub.title}" cleared automated checks, but the pool reached its item target moments earlier and no capacity slot was left. This is not a quality rejection — your submission was valid, the pool was simply full.`,
           entityType: "Submission",
@@ -327,6 +328,7 @@ export async function runSubmissionValidation(submissionId: string, validationAt
       await notifyUser({
         userId: sub.contributorUserId,
         type: "submission.accepted",
+        eventKey: `submission.accepted:${sub.id}:validation:${sub.revisionCount}`,
         title: "Submission routed to validator review",
         body:
           execution.reason === "no_provider_configured"
@@ -372,6 +374,7 @@ export async function runSubmissionValidation(submissionId: string, validationAt
     await notifyUser({
       userId: sub.contributorUserId,
       type: "submission.needs_fixes",
+      eventKey: `submission.needs_fixes:${sub.id}:validation:${sub.revisionCount}`,
       title: "Submission failed tests",
       body: `Your submission "${sub.title}" failed its own tests. See execution evidence for details.`,
       entityType: "Submission",
@@ -586,6 +589,7 @@ export async function runSubmissionValidation(submissionId: string, validationAt
     await notifyUser({
       userId: sub.contributorUserId,
       type: "submission.rejected",
+      eventKey: `submission.rejected:${sub.id}:validation:${sub.revisionCount}`,
       title: "Pool filled before your submission could be counted",
       body: `"${sub.title}" passed its own tests, but the pool reached its item target moments earlier and no capacity slot was left. This is not a quality rejection — your submission was valid, the pool was simply full.`,
       entityType: "Submission",
@@ -629,6 +633,7 @@ export async function runSubmissionValidation(submissionId: string, validationAt
   await notifyUser({
     userId: sub.contributorUserId,
     type: "submission.accepted",
+    eventKey: `submission.accepted:${sub.id}:validation:${sub.revisionCount}`,
     title: "Submission passed execution",
     // Three distinct, honest bodies — the flag-off case must NOT say "LLM
     // review is not configured", which would blame the environment for a

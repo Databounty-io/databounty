@@ -639,7 +639,7 @@ export async function runPoolSamplingJob(bountyId: string): Promise<SamplingOutc
 
     const eligible = await tx.submission.findMany({
       where: { bountyId, status: SubmissionStatus.accepted_pending_sample },
-      select: { id: true, contributorUserId: true, title: true, pendingHumanReview: true },
+      select: { id: true, contributorUserId: true, title: true, pendingHumanReview: true, revisionCount: true },
     });
 
     const sponsorUserId = bounty.communityRequesterUserId ?? bounty.requesterUserId;
@@ -662,6 +662,7 @@ export async function runPoolSamplingJob(bountyId: string): Promise<SamplingOutc
         notifyUser({
           userId: sponsorUserId,
           type: "pool.sponsor_review_ready",
+          eventKey: `pool.sponsor_review_ready:${bountyId}:close:${bounty.poolClosedAt?.getTime() ?? 0}`,
           title: "Pool closed — your review is needed",
           body: `"${bounty.title}" reached its item target with no validator coverage configured. ${eligible.length} submission(s) are awaiting your approve/reject decision.`,
           entityType: "Bounty",
@@ -674,6 +675,7 @@ export async function runPoolSamplingJob(bountyId: string): Promise<SamplingOutc
           notifyUser({
             userId: sub.contributorUserId,
             type: "submission.pending_sponsor_review",
+            eventKey: `submission.pending_sponsor_review:${sub.id}:pool_close_out:${sub.revisionCount}`,
             title: "Submission awaiting sponsor review",
             body: `"${sub.title}" cleared automation and is now awaiting the pool requester's direct review (no validator coverage on this pool).`,
             entityType: "Submission",
@@ -907,6 +909,7 @@ export async function runPoolSamplingJob(bountyId: string): Promise<SamplingOutc
       notifyUser({
         userId: sponsorUserId,
         type: "pool.sampling_started",
+        eventKey: `pool.sampling_started:${bountyId}:close:${bounty.poolClosedAt?.getTime() ?? 0}`,
         title: "Pool closed — human review sampling complete",
         body: `"${bounty.title}" reached its item target. ${selectedIds.length} of ${eligible.length} submissions were selected for validator review across ${windowIdByChunk.length} review window(s) of up to ${windowSize} items; the rest are accepted.`,
         entityType: "Bounty",
@@ -920,6 +923,7 @@ export async function runPoolSamplingJob(bountyId: string): Promise<SamplingOutc
         notifyUser({
           userId: sub.contributorUserId,
           type: wasSelected ? "submission.sampled_for_audit" : "submission.auto_accepted",
+          eventKey: `${wasSelected ? "submission.sampled_for_audit" : "submission.auto_accepted"}:${sub.id}:pool_close_out:${sub.revisionCount}`,
           title: wasSelected ? "Submission selected for validator review" : "Submission accepted",
           body: wasSelected
             ? `"${sub.title}" was selected for human validator review as the pool closed.`

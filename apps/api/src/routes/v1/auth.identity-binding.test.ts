@@ -260,6 +260,16 @@ vi.mock("../../services/notifications.js", () => ({
   seedEmailNotificationChannel: async () => {},
 }));
 
+// Account provisioning is out of scope for this file (it asserts Google
+// subject binding) and now runs through the job queue, which this hand-rolled
+// prisma double does not model. Stubbed for the same reason the notifications
+// service above is — see services/user-provisioning.ts for what it really
+// does, and mcp/auth provisioning coverage for where it is exercised.
+vi.mock("../../services/user-provisioning.js", () => ({
+  enqueueUserProvisioning: async () => {},
+  healUserProvisioning: async () => {},
+}));
+
 const { authRoutes } = await import("./auth.js");
 
 // ---------------------------------------------------------------------------

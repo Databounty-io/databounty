@@ -2,6 +2,7 @@
 
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
+import compress from "@fastify/compress";
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import sensible from "@fastify/sensible";
@@ -84,6 +85,26 @@ export async function buildApp(): Promise<FastifyInstance> {
     noSniff: true,
     referrerPolicy: { policy: "no-referrer" },
     crossOriginResourcePolicy: { policy: "cross-origin" },
+  });
+
+  // Response compression. Measured on production 2026-09-22 with
+  // `Accept-Encoding: gzip, br` and no `Content-Encoding` coming back:
+  // `/v1/community/catalog` 543 KB → 147 KB, `/v1/bounties` 432 KB → 100 KB,
+  // `/v1/meta/public-catalog` 69 KB → 16 KB. A 73–77% cut on every JSON
+  // response, public and authenticated alike, and by a wide margin the single
+  // largest lever on the ~10 GB/day of database-to-client egress that was
+  // investigated that day — larger than every caching change combined,
+  // because it applies to cache hits and misses equally.
+  //
+  // `global: true` so it covers every route without per-route opt-in.
+  // `threshold` leaves small bodies alone, where the CPU and the ~20 bytes of
+  // gzip framing cost more than they save. Brotli is offered first for clients
+  // that advertise it and gzip is the fallback; a client that advertises
+  // neither still gets an uncompressed body, so nothing breaks.
+  await app.register(compress, {
+    global: true,
+    threshold: 1024,
+    encodings: ["br", "gzip", "deflate"],
   });
 
   await app.register(cookie);

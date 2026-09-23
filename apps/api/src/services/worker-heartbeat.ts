@@ -21,9 +21,30 @@ import {
  * heartbeat table at all, so `routes/v1/admin-health.ts` reported an
  * permanently-empty `workers` list.
  */
+/**
+ * Names this process actually runs a loop for.
+ *
+ * `worker_heartbeats` rows outlive the code that wrote them — nothing deletes
+ * one when a worker is renamed or removed — and the watchdog alerts on any row
+ * it finds stale. A renamed worker therefore leaves a row that can never tick
+ * again and never resolve. Live on production since 2026-09-09:
+ * `pool-deadline-sweep` (renamed to `pool-reconcile-and-settle`) has held a
+ * `critical` alert for 13 days and been re-upserted every 60s, ~18,000 writes,
+ * while the admin health page showed a permanent false red.
+ *
+ * Registration happens at construction, before the first tick, so the set is
+ * complete by the time the watchdog can run.
+ */
+const registeredWorkers = new Set<string>();
+
+export function registeredWorkerNames(): ReadonlySet<string> {
+  return registeredWorkers;
+}
+
 export function createHeartbeatWorker(
   opts: NotificationWorkerOptions & { name: string; tickTimeoutMs?: number }
 ): NotificationWorker {
+  registeredWorkers.add(opts.name);
   const intervalMs = Math.max(opts.intervalMs ?? 15_000, 1_000);
   const tickTimeoutMs = opts.tickTimeoutMs ?? defaultTickTimeoutMs(intervalMs);
   return createNotificationWorker({
@@ -108,6 +129,9 @@ function defaultTickTimeoutMs(intervalMs: number): number {
  * operator the same attention a real one does.
  */
 export async function touchWorkerHeartbeat(name: string, intervalMs: number): Promise<void> {
+  // The bare loops (job dispatch, Telegram) heartbeat through here rather than
+  // through `createHeartbeatWorker`, so they register here instead.
+  registeredWorkers.add(name);
   await writeHeartbeat(name, intervalMs, null);
 }
 

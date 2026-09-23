@@ -1450,6 +1450,7 @@ export async function submitAuditDecisions(params: {
           notifyUser({
             userId: membership.submission.contributorUserId,
             type: "submission.flagged",
+            eventKey: `submission.flagged:${membership.submissionId}:window:${window.id}`,
             title: "A validator flagged your submission",
             body: dec.note
               ? `Your submission was flagged for review: ${dec.note}`
@@ -1485,6 +1486,7 @@ export async function submitAuditDecisions(params: {
           notifyUser({
             userId: membership.submission.contributorUserId,
             type: "submission.accepted",
+            eventKey: `submission.accepted:${membership.submissionId}:window:${window.id}`,
             title: "Your submission was accepted",
             body: karmaResult.held
               ? "A validator reviewed and accepted your submission. Karma is held until the dispute window closes, then credited to your balance."

@@ -344,9 +344,16 @@ export async function testChannel(userId: string, channel: ChannelKind) {
   }
 }
 
-export async function patchChannel(userId: string, channel: ChannelKind, patch: { deliver?: boolean; address?: string }) {
+export async function patchChannel(
+  userId: string,
+  channel: ChannelKind,
+  patch: { deliver?: boolean; deliverDigest?: boolean; address?: string },
+) {
   const data: Prisma.NotificationChannelUpdateInput = {};
   if (patch.deliver !== undefined) data.deliver = patch.deliver;
+  // Re-subscribing to the digest. The public one-click unsubscribe endpoint
+  // can only ever set this false; this is the only way back on.
+  if (patch.deliverDigest !== undefined) data.deliverDigest = patch.deliverDigest;
   if (patch.address !== undefined) {
     if (isWebhookChannel(channel)) assertAllowedWebhookUrl(channel, patch.address);
     data.address = patch.address;

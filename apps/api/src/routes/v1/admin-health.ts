@@ -3,6 +3,7 @@
 import type { FastifyInstance } from "fastify";
 import { JobStatus } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
+import { cacheStatus } from "../../lib/cache/index.js";
 import { requireRole, ADMIN_AND_ABOVE_READONLY } from "../../lib/rbac.js";
 import { listActiveAlerts } from "../../services/alerts.js";
 import { heartbeatStaleAfterMs } from "../../services/worker-heartbeat.js";
@@ -93,6 +94,10 @@ export async function adminHealthRoutes(app: FastifyInstance) {
     // which green never could.
     const noWorkersReporting = workers.length === 0;
 
+    // Degraded, not broken: an open cache circuit means every read is going to
+    // the database instead. Correct, and slower — amber, never red.
+    const cache = cacheStatus();
+
     // A dead-lettered job, a dead worker loop, a worker whose last tick
     // errored (still ticking, but not doing its job), or a critical alert is
     // red — each means work is silently not happening. Open circuits, failed
@@ -100,7 +105,7 @@ export async function adminHealthRoutes(app: FastifyInstance) {
     const status: "green" | "amber" | "red" =
       deadLetterCount > 0 || staleWorkers > 0 || erroringWorkers > 0 || criticalAlerts > 0
         ? "red"
-        : noWorkersReporting || openCircuits.length > 0 || failedJobs > 0 || activeAlerts.length > 0
+        : noWorkersReporting || openCircuits.length > 0 || failedJobs > 0 || activeAlerts.length > 0 || cache.circuitOpen
           ? "amber"
           : "green";
 
@@ -117,8 +122,15 @@ export async function adminHealthRoutes(app: FastifyInstance) {
       // Explicit, so the console can say WHY it is amber instead of leaving an
       // operator to infer it from an empty list.
       noWorkersReporting,
-      // No cache/Redis client exists in this codebase.
-      cache: { driver: "not_configured", circuitOpen: false },
+      // Real state, read from the live driver (lib/cache/). This was hardcoded
+      // to `not_configured` with a comment saying no cache client existed —
+      // true when written, false once the layer landed, and a panel that
+      // reports a fixed value is worse than one that reports nothing. It also
+      // hid the one failure this layer is built to survive: with Redis
+      // unreachable the breaker opens and the in-process tier quietly absorbs
+      // the load, so from outside a degraded cache looks exactly like a
+      // healthy one. `circuitOpen` is the only signal that tells them apart.
+      cache: cacheStatus(),
       providerCircuits: openCircuits.map((c) => ({
         provider: c.provider,
         consecutiveFailures: c.consecutiveFailures,

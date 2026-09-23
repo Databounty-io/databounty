@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { createHash } from "node:crypto";
+import { positiveIntEnv } from "./env-int.js";
 import { prisma } from "./prisma.js";
 
 /**
@@ -45,8 +47,8 @@ export interface RateLimitResult {
  * CONFLICT DO UPDATE, so concurrent requests from the same credential cannot
  * both read a stale count.
  */
-export async function checkAndIncrement(bucketKey: string): Promise<RateLimitResult> {
-  const limit = limitPerMin();
+export async function checkAndIncrement(bucketKey: string, limitOverride?: number): Promise<RateLimitResult> {
+  const limit = limitOverride ?? limitPerMin();
   const start = currentWindowStart();
   const rows = await prisma.$queryRaw<{ count: number }[]>`
     INSERT INTO api_key_rate_buckets (key_id, window_start, count)
@@ -63,6 +65,72 @@ export async function checkAndIncrement(bucketKey: string): Promise<RateLimitRes
     remaining: Math.max(0, limit - count),
     retryAfterSec,
   };
+}
+
+/** Per client_id, per minute, on `POST /mcp/oauth/token`. 0 disables. */
+const tokenLimitPerMin = () => positiveIntEnv("MCP_TOKEN_RATE_LIMIT_PER_MIN", 60, true);
+
+/** Per *presented grant secret*, per minute, on the same endpoint. 0 disables. */
+const tokenReplayLimitPerMin = () => positiveIntEnv("MCP_TOKEN_REPLAY_LIMIT_PER_MIN", 5, true);
+
+/**
+ * `POST /mcp/oauth/token` was the one credentialed surface with NO
+ * per-client limit.
+ *
+ * The limiter in `app.ts` only fires on an `Authorization: Bearer` header, and
+ * this endpoint deliberately has none — it is a public PKCE client
+ * authenticating with a form body (`token_endpoint_auth_methods_supported:
+ * ["none"]`). So it fell through to the global per-IP bucket, and that bucket
+ * is worth nothing here: `TRUST_PROXY` is unset on the deployment, so every
+ * container-proxied request arrives as the same Docker gateway address. One
+ * bucket, every client. A single broken client can spend the whole allowance
+ * and there is no way to tell it apart from anyone else.
+ *
+ * Observed in production 2026-09-22: one contributor's Codex connector held a
+ * dead refresh token and replayed it 313 times over nine days, entirely
+ * unthrottled, each attempt re-handshaking against `/mcp`.
+ *
+ * TWO buckets, because they catch different failures:
+ *
+ *  - `clientId` — the broad one. Bounds a client that loops by re-authorising
+ *    with fresh grants, which a token-keyed bucket alone would never see.
+ *    Untrusted (it comes from the request body), so it is hashed, both to
+ *    bound the key length and to keep a caller-chosen string out of the table.
+ *
+ *  - The presented code/refresh token — the precise one, and the reason this
+ *    fix actually works. Rotation means a healthy client presents a DIFFERENT
+ *    secret every time, so it lands in a fresh bucket and never approaches the
+ *    limit no matter how often it refreshes. A client replaying one dead token
+ *    lands in the SAME bucket every attempt and is throttled within seconds.
+ *    The limit can therefore be tight without risk to a working client.
+ *    Hashed with SHA-256 and truncated: the raw secret must never reach a
+ *    table, and the bucket key is not a secret store.
+ *
+ * Both checks run and the caller is refused if EITHER is exceeded; the
+ * recorded increment on the other is intentional, since a refused attempt is
+ * still an attempt.
+ */
+export async function checkTokenEndpoint(input: {
+  clientId: string;
+  presentedSecret?: string;
+}): Promise<RateLimitResult | null> {
+  const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 32);
+
+  const results: RateLimitResult[] = [];
+
+  const clientLimit = tokenLimitPerMin();
+  if (clientLimit > 0) {
+    results.push(await checkAndIncrement(`mcp-token:client:${digest(input.clientId)}`, clientLimit));
+  }
+
+  const replayLimit = tokenReplayLimitPerMin();
+  if (input.presentedSecret && replayLimit > 0) {
+    results.push(await checkAndIncrement(`mcp-token:grant:${digest(input.presentedSecret)}`, replayLimit));
+  }
+
+  // Report the first refusal, so `Retry-After` describes the bucket that
+  // actually blocked the caller rather than whichever check ran last.
+  return results.find((result) => !result.allowed) ?? null;
 }
 
 /** Periodic cleanup so the table doesn't grow unbounded. Plain DELETE — safe to

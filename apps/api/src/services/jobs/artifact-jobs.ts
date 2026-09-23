@@ -331,13 +331,27 @@ export function enqueueFormatSimilarityCheck(
   return enqueueFormatStage("artifact.similarity_check", artifact, tx);
 }
 
-/** Untenanted platform maintenance sweep. Five-minute idempotency bucket so
- * many workers ticking together still enqueue one purge per window. */
+/**
+ * Untenanted platform maintenance sweep, on an HOURLY idempotency bucket.
+ *
+ * The bucket used to be 300_000 ms — exactly the sweep's own default interval
+ * (`ARTIFACT_SWEEP_INTERVAL_MS`, worker.ts). A bucket the same width as the
+ * tick that fills it never coalesces anything: every tick lands in a fresh
+ * bucket and creates a new row. Measured on production: a flat 288 rows/day,
+ * 86400/300 exactly, 12,874 rows accumulated — a third of the entire
+ * `job_queue` table. Its sibling `agent_issue.purge_expired` uses an hourly
+ * bucket and produces 24/day, which is what this now matches.
+ *
+ * The bucket must stay strictly wider than the sweep interval for the
+ * coalescing to mean anything.
+ */
+const PURGE_BUCKET_MS = 3_600_000;
+
 export async function enqueueExpiredUploadPurge(): Promise<void> {
   await enqueueJob(
     "artifact.purge_expired_uploads",
     {} as Record<string, never>,
-    { idempotencyKey: `artifact.purge_expired_uploads:${Math.floor(Date.now() / 300_000)}`, maxAttempts: 3 }
+    { idempotencyKey: `artifact.purge_expired_uploads:${Math.floor(Date.now() / PURGE_BUCKET_MS)}`, maxAttempts: 3 }
   );
 }
 

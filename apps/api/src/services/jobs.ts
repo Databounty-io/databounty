@@ -117,6 +117,21 @@ export type JobType =
   // --- Leaderboard ----------------------------------------------------------
   /** Recomputes one member's Open-leaderboard position after their karma
    * changed and announces a real improvement. Payload: `{ userId }`. */
+  /** One-time setup for a newly created account — personal workspace, email
+   * notification channel, default watch preferences — plus the idempotent
+   * repair of the same, re-armed whenever an existing account is seen without
+   * a channel. Payload: `{ userId }`; the handler re-reads the user so it acts
+   * on current state rather than a snapshot taken at enqueue time.
+   *
+   * A job rather than inline work on purpose. These were three loose `void`
+   * calls on the signup routes: detached, so a transient failure or a process
+   * exit lost them silently and nothing retried, and absent entirely from the
+   * invite-acceptance path. Awaiting them instead would have bound account
+   * creation to three writes that have nothing to do with returning a session.
+   * Enqueued inside the same transaction as the `User` row, it is atomic with
+   * the account (never orphaned, never lost), off the request path, and
+   * retried with the queue's own bounded-attempt budget. */
+  | "user.provision"
   | "leaderboard.rank_check"
   // Proof run for an admin-authored bound harness on a sponsor custom/forked
   // dataset type (ported from v1's `harness.proof_run`; see
@@ -158,6 +173,7 @@ export interface JobPayloads {
   "agent_issue.escalation_sweep": Record<string, never>;
   "agent_issue.escalate": { issueId: string; policyVersion: number };
   "agent_issue.notify_canonical_outcome": { canonicalIssueId: string; version: number };
+  "user.provision": { userId: string };
   "leaderboard.rank_check": { userId: string };
   "harness.proof_run": {
     harnessId: string;

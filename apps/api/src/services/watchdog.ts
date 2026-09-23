@@ -3,7 +3,7 @@
 import { JobStatus } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { emitAlert, resolveAlert } from "./alerts.js";
-import { heartbeatStaleAfterMs } from "./worker-heartbeat.js";
+import { heartbeatStaleAfterMs, registeredWorkerNames } from "./worker-heartbeat.js";
 
 /**
  * Watchdog sweep: the periodic detector that turns silent failure modes into
@@ -153,13 +153,50 @@ export async function runWatchdogSweep(): Promise<WatchdogReport> {
   }
 
   // ── Worker heartbeats (total worker death — the errorless failure) ────
-  const staleWorkers: string[] = [];
+  //
+  // Two corrections to a loop that alerted once per stale worker,
+  // unconditionally. Measured on production: 470 alert notification rows from
+  // ~9 real incidents — 52x amplification. One deploy on 2026-08-18 produced
+  // 280 of them (28 workers x 5 admins, alert and recovery).
+  //
+  //  1. A heartbeat row nobody owns can never tick again. Nothing deletes the
+  //     row when a worker is renamed, so `pool-deadline-sweep` (now
+  //     `pool-reconcile-and-settle`) has held a false `critical` since
+  //     2026-09-09. Resolve and ignore it rather than alerting forever.
+  //  2. Every worker runs in ONE process (worker.ts, SINGLE-PROCESS MODEL), so
+  //     they cannot fail independently: all-stale means the process died, and
+  //     naming each one tells an operator nothing extra. That is one alert. A
+  //     strict subset going stale IS per-worker (one loop wedged) and still
+  //     reports individually. Exactly one of the two shapes is ever active.
+  const live = registeredWorkerNames();
+  const owned = heartbeats.filter((hb) => live.has(hb.name));
+  const stale = owned.filter((hb) => now - hb.lastRunAt.getTime() > heartbeatStaleAfterMs(hb.intervalMs));
+  const staleWorkers = stale.map((hb) => hb.name);
+  const processDown = owned.length > 1 && stale.length === owned.length;
+
   for (const hb of heartbeats) {
-    const staleAfter = heartbeatStaleAfterMs(hb.intervalMs);
-    const ageMs = now - hb.lastRunAt.getTime();
+    if (!live.has(hb.name)) await resolveAlert(`worker_stale:${hb.name}`, `Worker "${hb.name}" no longer exists.`);
+  }
+
+  if (processDown) {
+    const oldestAgeMs = Math.max(...stale.map((hb) => now - hb.lastRunAt.getTime()));
+    await emitAlert({
+      code: "worker_stale",
+      severity: "critical",
+      dedupeKey: "worker_stale:all",
+      summary: `All ${owned.length} background workers have stopped ticking (oldest ${Math.round(
+        oldestAgeMs / 60_000
+      )} min) — the worker process is down.`,
+      context: { workers: owned.length, oldestAgeMs },
+    });
+  } else {
+    await resolveAlert("worker_stale:all", "Background workers are ticking again.");
+  }
+
+  for (const hb of owned) {
     const dedupeKey = `worker_stale:${hb.name}`;
-    if (ageMs > staleAfter) {
-      staleWorkers.push(hb.name);
+    const ageMs = now - hb.lastRunAt.getTime();
+    if (!processDown && stale.includes(hb)) {
       await emitAlert({
         code: "worker_stale",
         severity: "critical",
@@ -170,7 +207,10 @@ export async function runWatchdogSweep(): Promise<WatchdogReport> {
         context: { worker: hb.name, ageMs, intervalMs: hb.intervalMs, lastError: hb.lastError },
       });
     } else {
-      await resolveAlert(dedupeKey, `Worker "${hb.name}" is ticking again.`);
+      await resolveAlert(
+        dedupeKey,
+        processDown ? "Rolled up into the process-wide alert." : `Worker "${hb.name}" is ticking again.`
+      );
     }
   }
 

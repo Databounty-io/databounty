@@ -53,7 +53,7 @@ export async function emitAlert(input: EmitAlertInput): Promise<boolean> {
     existing.status === SystemAlertStatus.active &&
     SEVERITY_RANK[input.severity] > SEVERITY_RANK[existing.severity];
 
-  await prisma.systemAlert.upsert({
+  const row = await prisma.systemAlert.upsert({
     where: { dedupeKey: input.dedupeKey },
     create: {
       code: input.code,
@@ -83,10 +83,16 @@ export async function emitAlert(input: EmitAlertInput): Promise<boolean> {
     // Operational health alerts are for the admin console only. A regular
     // member must never receive worker/watchdog state in their personal bell.
     adminOnly: true,
-    // keySuffix makes the notification idempotency key unique per activation
-    // (and per escalation step), while repeats inside one activation are
-    // already filtered out above.
-    keySuffix: `${input.dedupeKey}:${input.severity}:${now.getTime()}`,
+    // Keyed on the ACTIVATION, not the wall clock. `firstSeenAt` is stamped
+    // once when the condition activates and does not move while it stays
+    // active, so this is stable for exactly as long as the incident is —
+    // which is what makes the (userId, eventKey) upsert able to collapse a
+    // double emit. The previous `now.getTime()` made every key unique, so if
+    // one activation ever emitted twice — a retry, or two worker instances
+    // racing the guard above — both rows landed in every admin's inbox with
+    // nothing able to merge them. Severity stays in the key so a genuine
+    // escalation within one activation is still its own notification.
+    keySuffix: `${input.dedupeKey}:${input.severity}:${row.firstSeenAt.getTime()}`,
     data: { code: input.code, severity: input.severity, summary: input.summary },
   });
   return true;
@@ -109,7 +115,10 @@ export async function resolveAlert(dedupeKey: string, summary?: string): Promise
     // Keep recoveries on the same admin-only rail as the alert that preceded
     // them; otherwise a routine worker restart leaks into member dashboards.
     adminOnly: true,
-    keySuffix: `${dedupeKey}:recovered:${Date.now()}`,
+    // Same reasoning as the activation key above: `resolvedAt` identifies THIS
+    // recovery and stops a re-run posting a second "recovered" note for one
+    // incident. Falls back to the dedupe key alone if the row vanished.
+    keySuffix: `${dedupeKey}:recovered:${alert?.resolvedAt?.getTime() ?? "unknown"}`,
     data: {
       code: alert?.code ?? dedupeKey,
       summary: summary ?? `The "${alert?.code ?? dedupeKey}" condition has cleared.`,

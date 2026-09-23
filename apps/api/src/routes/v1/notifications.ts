@@ -201,7 +201,16 @@ export async function notificationRoutes(app: FastifyInstance) {
     }
   });
 
-  const patchBody = z.object({ deliver: z.boolean().optional(), address: z.string().trim().min(1).max(500).optional() });
+  // `deliverDigest` is here because without it the one-click unsubscribe link
+  // (`POST /unsubscribe-digest`, which hardcodes `deliverDigest: false`) was
+  // the ONLY writer of this column — so a user who unsubscribed from the daily
+  // digest had no way back through any API. v1 exposes it on this same PATCH
+  // (`routes/v1/notifications.ts:44`); this port had dropped it.
+  const patchBody = z.object({
+    deliver: z.boolean().optional(),
+    deliverDigest: z.boolean().optional(),
+    address: z.string().trim().min(1).max(500).optional(),
+  });
 
   app.patch("/channels/:id", { preHandler: [requireAuth] }, async (req, reply) => {
     const user = (req as FastifyRequest & { authedUser: AuthedUser }).authedUser;

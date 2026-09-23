@@ -37,7 +37,7 @@ import {
   clearAdminSessionCookie,
   sessionTokenFrom,
 } from "../../lib/session-cookie.js";
-import { ensurePersonalWorkspace } from "../../lib/workspace.js";
+import { enqueueUserProvisioning, healUserProvisioning } from "../../services/user-provisioning.js";
 import {
   sendWelcomeEmail,
   sendWelcomeVerificationEmail,
@@ -52,7 +52,6 @@ import {
   loginAccountKey,
   recordLoginFailure,
 } from "../../lib/auth-failure-metrics.js";
-import { ensureDefaultWatchPref, seedEmailNotificationChannel } from "../../services/notifications.js";
 
 const emailField = z.string().email().transform((s) => s.toLowerCase());
 
@@ -387,12 +386,13 @@ export async function authRoutes(app: FastifyInstance) {
           ip: req.ip,
           userAgent: req.headers["user-agent"] ?? null,
         });
+        // In the SAME transaction as the User row: atomic with the account, so
+        // a rolled-back signup leaves no job and a committed one can never
+        // lose its provisioning. Off the response path either way.
+        await enqueueUserProvisioning(newUser.id, { tx });
         return newUser;
       });
 
-      void ensurePersonalWorkspace(user.id, user.displayName);
-      void seedEmailNotificationChannel(user.id, identity.email);
-      void ensureDefaultWatchPref(user.id);
       void sendWelcomeEmail(identity.email, identity.name).catch((err) => {
       // Fire-and-forget on purpose: the request must not fail, and must not
       // reveal whether an address exists. But an EMPTY catch here hid a broken
@@ -402,6 +402,11 @@ export async function authRoutes(app: FastifyInstance) {
     });
     } else {
       user = outcome.user;
+      // v1 `routes/v1/auth.ts:329`: repair the email channel on EVERY Google
+      // sign-in, not only at account creation. This is the call this port had
+      // dropped, and the reason accounts created by any other path stayed
+      // permanently unreachable by email.
+      await healUserProvisioning(user.id);
     }
 
     if (user.status !== "active") return reply.forbidden("Account is suspended");
@@ -495,12 +500,13 @@ export async function authRoutes(app: FastifyInstance) {
         ip: req.ip,
         userAgent: req.headers["user-agent"] ?? null,
       });
+      // Atomic with the User row — see enqueueUserProvisioning. The email
+      // channel itself is NOT created here: at signup the address is not yet
+      // proven, and `seedEmailNotificationChannel` refuses an unverified
+      // account. It appears when the user verifies, below.
+      await enqueueUserProvisioning(newUser.id, { tx });
       return newUser;
     });
-
-    void ensurePersonalWorkspace(user.id, user.displayName);
-    void seedEmailNotificationChannel(user.id, email);
-    void ensureDefaultWatchPref(user.id);
 
     const verificationToken = await createEmailVerificationToken(user.id);
     void sendWelcomeVerificationEmail(email, displayName, verificationToken).catch((err) => {
@@ -887,8 +893,8 @@ export async function authRoutes(app: FastifyInstance) {
     const userId = await consumeEmailVerificationToken(parsed.data.token);
     if (!userId) return reply.badRequest("Invalid or expired verification link");
 
-    await prisma.$transaction(async (tx) => {
-      await tx.user.update({
+    const verified = await prisma.$transaction(async (tx) => {
+      const updated = await tx.user.update({
         where: { id: userId },
         data: { emailVerifiedAt: new Date() },
       });
@@ -899,7 +905,15 @@ export async function authRoutes(app: FastifyInstance) {
         targetId: userId,
         ip: req.ip,
       });
+      return updated;
     });
+
+    // v1 `routes/v1/auth.ts:802`. For a password account THIS is where the
+    // email channel is born — signup cannot create it, because at signup the
+    // address is not yet proven to belong to the person typing it. Without
+    // this call a password user verified their address and still received
+    // nothing, forever.
+    await healUserProvisioning(verified.id);
 
     return reply.send({ ok: true, message: "Email verified successfully" });
   });
@@ -951,6 +965,11 @@ export async function authRoutes(app: FastifyInstance) {
           status: "active",
         },
       });
+      // v1 `routes/v1/auth.ts:445`. This branch mints a real admin account and
+      // had none of the new-account provisioning the two signup routes do — no
+      // workspace, no watch preference, and no email channel, so every
+      // `admin.*` alert this person is meant to receive went nowhere.
+      await enqueueUserProvisioning(user.id);
     }
 
     await prisma.$transaction(async (tx) => {
@@ -978,6 +997,12 @@ export async function authRoutes(app: FastifyInstance) {
         ip: req.ip,
       });
     });
+
+    // v1 `routes/v1/auth.ts:479`: repair on EVERY acceptance, not only when
+    // the account is new. An invite accepted by someone who already had an
+    // account is the common case, and that account may pre-date any of the
+    // seeding paths.
+    await healUserProvisioning(user.id);
 
     const sessionToken = await createSession(user.id, {
       userAgent: req.headers["user-agent"],

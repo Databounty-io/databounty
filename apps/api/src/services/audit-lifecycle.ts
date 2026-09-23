@@ -118,6 +118,13 @@ export async function releaseOverdueAudits(now: Date = new Date()): Promise<numb
     await notifyUser({
       userId: validatorId,
       type: "audit.deadline_missed",
+      // Scoped to THIS claim, not just the window. Both branches above null
+      // `claimExpiresAt`, so one claim can only ever miss once — but a
+      // validator who re-claims a released window and misses again has
+      // genuinely missed a second deadline, and a window-only key would
+      // silently swallow that notification. `window` still holds the
+      // pre-update value read by the findMany, which identifies the claim.
+      eventKey: `audit.deadline_missed:${window.id}:claim:${window.claimExpiresAt?.getTime() ?? 0}`,
       title: decidedItems === 0 ? "Audit claim released — deadline missed" : "Audit claim overdue — partial decisions kept",
       body:
         decidedItems === 0

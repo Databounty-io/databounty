@@ -321,6 +321,7 @@ export async function bountyRoutes(app: FastifyInstance) {
       await notifyUser({
         userId: submission.contributorUserId,
         type: "submission.accepted",
+        eventKey: `submission.accepted:${submission.id}:sponsor_review:${submission.revisionCount}`,
         title: "Submission accepted",
         body: `Your submission "${submission.title}" was accepted by the pool requester.`,
         entityType: "Submission",
@@ -352,6 +353,7 @@ export async function bountyRoutes(app: FastifyInstance) {
       await notifyUser({
         userId: submission.contributorUserId,
         type: "submission.needs_fixes",
+        eventKey: `submission.needs_fixes:${submission.id}:sponsor_review:${submission.revisionCount}`,
         title: "Submission needs changes",
         body: `The pool requester sent back "${submission.title}": ${parsed.data.note}`,
         entityType: "Submission",

@@ -55,8 +55,17 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 USER nextjs
 EXPOSE 3002
-HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=5 \
-  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 3002) + '/').then(r => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))"
+# Probe a static asset, NOT `/`. The root of this app is a server-rendered
+# page; probing it every 15 s made the container render its own homepage
+# 5,760 times a day, each render fanning out to the API and from there to
+# Postgres (for landing: 3 catalog calls + stats per render). Measured on
+# 2026-09-22 as the bulk of a steady ~10 GB/day of Supabase egress. The
+# favicon is served straight from the standalone build with no data fetch,
+# so it still proves the Node server is up and answering HTTP, which is all
+# a liveness probe should prove. 60 s is plenty for a restart-on-failure
+# policy; a 15 s cadence was never load-bearing for anything.
+HEALTHCHECK --interval=60s --timeout=5s --start-period=15s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 3002) + '/favicon.ico').then(r => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))"
 
 # Verified: .next/standalone always emits server.js as the entrypoint.
 CMD ["node", "server.js"]

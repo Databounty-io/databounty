@@ -92,6 +92,24 @@ export const PUBLIC_DATASET_TYPE_SELECT = {
 } as const;
 
 /**
+ * The list-card projection: `PUBLIC_DATASET_TYPE_SELECT` minus the three JSON
+ * contract columns (`fields`, `verification`, `sampleAssets`).
+ *
+ * `GET /v1/community/catalog` returns every active dataset type on every
+ * call, alongside the page of bounties. With the JSON columns those 50 rows
+ * were ~1.6 KB each — the single largest query by bytes on both Supabase
+ * projects (2026-09-22 egress investigation), and nothing reading the list
+ * used them: the landing takes its types from `/v1/meta/public-catalog`, the
+ * dashboard from `/v1/planner/catalog`, and the by-id detail route below
+ * keeps the full projection. Anything that needs a type's contract asks for
+ * that one type.
+ */
+export const PUBLIC_DATASET_TYPE_LIST_SELECT = (() => {
+  const { fields: _fields, verification: _verification, sampleAssets: _sampleAssets, ...rest } = PUBLIC_DATASET_TYPE_SELECT;
+  return rest;
+})();
+
+/**
  * The harness fields a public caller may see. Same reasoning: the public
  * dataset-type detail route pulled the whole harness row, which carries
  * `authorUserId`, `reviewNote` and `proofJobId` (an internal job handle).

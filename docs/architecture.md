@@ -155,19 +155,31 @@ rather than adding throughput. The queue also has no fairness partitioning: `wor
 every job and nothing reads it, so one tenant's bulk upload occupies the claim slot until its backlog
 drains. Run a single worker until these are addressed.
 
-**23 job types:**
+**26 job types** (the full `JobType` union in `services/jobs.ts`, which a
+`Record<JobType, number>` in `worker.ts` makes impossible to extend without a
+handler and a lease):
 
 ```
 validation.run              pool.sampling            leaderboard.rank_check
 artifact.scan               artifact.parse           artifact.preview
 artifact.similarity_check   artifact.purge_expired_uploads
-bulk_source.parse           sponsor_reference.review community.publish
-profile_source.verify       benchmark.version_build  benchmark.run_evaluation
+bulk_source.parse           upload_draft.submit      sponsor_reference.review
+community.publish           community.unpublish
+user.provision              profile_source.verify
+benchmark.version_build     benchmark.run_evaluation
 notifications.fanout_watchers                        waitlist.notify_domain_live
 harness.proof_run           agent_issue.escalate     agent_issue.escalation_sweep
 agent_issue.purge_expired   agent_issue.notify_filed
 agent_issue.duplicate_candidates                     agent_issue.notify_canonical_outcome
 ```
+
+`user.provision` is worth calling out because of where it is enqueued: inside
+the same transaction as the `User` row it provisions. Account setup (personal
+workspace, email notification channel, default watch preferences) is therefore
+atomic with account creation — a rolled-back signup leaves no job — while
+staying off the request path. It is also re-armed as an idempotent repair
+whenever an existing account is seen without an email channel, at sign-in,
+invite acceptance and email verification.
 
 **Time-based sweeps.** Not everything can be triggered by an event, so the worker also runs a small set
 of periodic loops. Each writes a heartbeat, and `services/watchdog.ts` raises an alert when one stops
@@ -179,6 +191,7 @@ ticking:
 | `dispatch` / `digest` | 15 s / 60 s | Notification delivery and digest flushing. |
 | `pool-reconcile-and-settle` | 10 min | Recounts open-pool capacity and settles pools that close after reaching their verified-item target. Community pools are open-ended and never close because time elapsed. |
 | `artifact-sweeps` | 5 min | Expired upload purge, and re-arms format stages whose handler version moved on. |
+| `rate-bucket-prune` | 5 min | Deletes expired one-minute rate-limit buckets. |
 | `agent-issue-sweeps` | 5 min | Aging escalation and retention. |
 | `leaderboard-rank-sweep` | 10 min | Coalesced rank-movement checks. |
 | `waitlist-notify-sweep` | 10 min | "Your domain is live" mail. |

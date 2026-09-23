@@ -104,6 +104,19 @@ const harnessProbeTimeoutMs = Math.min(5_000, Math.floor(executionTimeoutMs * 0.
 // The sandbox VM must outlive the command budget or it is reaped mid-run.
 const executionSandboxLifetimeMs = executionTimeoutMs + 30_000;
 
+/**
+ * `noop` (default) | `memory` | `redis`. An invalid value throws at boot: a
+ * typo must never quietly leave the cache off while an operator believes it
+ * is on.
+ */
+function cacheDriver(): "noop" | "memory" | "redis" {
+  const raw = (process.env.CACHE_DRIVER ?? "noop").trim().toLowerCase();
+  if (raw !== "noop" && raw !== "memory" && raw !== "redis") {
+    throw new Error(`Invalid CACHE_DRIVER: "${raw}" (expected noop | memory | redis)`);
+  }
+  return raw;
+}
+
 export const config: AppConfig & {
   isProd: boolean;
   sessionSecret: string;
@@ -132,6 +145,10 @@ export const config: AppConfig & {
     smtpUser?: string;
     smtpPass?: string;
   };
+  cache: {
+    driver: "noop" | "memory" | "redis";
+    redisUrl: string;
+  };
 } = {
   env: nodeEnv,
   isProd: isProdEnv,
@@ -159,6 +176,13 @@ export const config: AppConfig & {
   server: {
     bodyLimitBytes: getNumber("BODY_LIMIT_BYTES", 10 * 1024 * 1024, 1024, 100 * 1024 * 1024),
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
+  },
+  // Cache driver selection (lib/cache/). Defaults to `noop`, so with nothing
+  // configured the application behaves exactly as it did before this layer
+  // existed — which is what makes adopting it safe.
+  cache: {
+    driver: cacheDriver(),
+    redisUrl: process.env.REDIS_URL ?? "",
   },
   sessionSecret: process.env.SESSION_SECRET ?? "dev_session_secret_databounty_community_32bytes_long",
   adminSessionSecret: process.env.ADMIN_SESSION_SECRET ?? "dev_admin_session_secret_databounty_community_32bytes",

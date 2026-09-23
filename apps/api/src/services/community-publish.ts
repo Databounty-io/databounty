@@ -2,6 +2,7 @@
 
 import { BountyKind, CommunityPublicationStatus, PublicationTarget, SubmissionStatus, KarmaEventType, type Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
+import { clearPublicReadCache } from "../lib/public-read-cache.js";
 import { awardKarma } from "./karma.js";
 import { writeAuditLog } from "../lib/audit-log.js";
 import { getAdminSetting } from "./admin-settings.js";
@@ -952,6 +953,10 @@ export async function runCommunityPublishJob(bountyId: string): Promise<void> {
     });
   }
 
+  // `publicationStatus` is part of the cached public catalog body, so a
+  // publish that nobody invalidates stays invisible for up to the TTL.
+  clearPublicReadCache();
+
   if (sawTransientFailure) {
     throw new PublicationError("At least one publication target failed transiently; will retry.", false);
   }
@@ -1059,6 +1064,10 @@ export async function runCommunityUnpublishJob(bountyId: string): Promise<void> 
       data: { publicationStatus: CommunityPublicationStatus.retracted },
     });
   }
+
+  // Same reason as the publish path: a retraction the cache has not seen
+  // keeps showing a dataset as published.
+  clearPublicReadCache();
 
   if (sawTransientFailure) {
     throw new PublicationError(`Withdrawal incomplete for bounty ${bountyId}; retrying.`, false);

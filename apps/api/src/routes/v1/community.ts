@@ -2,8 +2,9 @@
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { PHASE_STATUSES, phaseSchema, queryBoolean, publicText, PUBLIC_DATASET_TYPE_SELECT, PUBLIC_HARNESS_SELECT } from "../../lib/public-query.js";
+import { PHASE_STATUSES, phaseSchema, queryBoolean, publicText, PUBLIC_DATASET_TYPE_SELECT, PUBLIC_DATASET_TYPE_LIST_SELECT, PUBLIC_HARNESS_SELECT } from "../../lib/public-query.js";
 import { prisma } from "../../lib/prisma.js";
+import { cachedPublicRead, publicReadCacheKey } from "../../lib/public-read-cache.js";
 import {
   getKarmaBreakdown,
   getLeaderboard,
@@ -356,8 +357,13 @@ function dedupeLanguagesByCase(rows: { language: string | null; _count: { _all: 
 
 export async function communityRoutes(app: FastifyInstance) {
   // Global Community Stats
+  //
+  // Cached in-process for PUBLIC_READ_CACHE_TTL_MS (default 60 s, see
+  // lib/public-read-cache.ts). The body depends on nothing about the caller,
+  // and it costs eight queries including ten leaderboard rank counts; the
+  // landing homepage requests it on every server render.
   app.get("/stats", async (_req, reply) => {
-    const stats = await getCommunityStats();
+    const stats = await cachedPublicRead(publicReadCacheKey("community.stats"), () => getCommunityStats());
     return reply.send(stats);
   });
 
@@ -454,56 +460,74 @@ export async function communityRoutes(app: FastifyInstance) {
       ...(category ? { category } : {}),
     };
 
-    let catalogResult;
+    // The whole body is cached per validated query for PUBLIC_READ_CACHE_TTL_MS
+    // (default 60 s, see lib/public-read-cache.ts). Nothing here depends on
+    // the caller — this route is unauthenticated and reads only public rows —
+    // so one computed page can serve every visitor for that minute. Before
+    // this, each call re-ran a bounty page, every active dataset type and the
+    // four pool rollups: measured on 2026-09-22 as ~200 KB of Postgres egress
+    // per call, at ~20k calls a day per environment, almost none of it from a
+    // person. The key is built from `parsed.data` only, never from headers.
+    const key = publicReadCacheKey("community.catalog", parsed.data);
+    let body;
     try {
-      catalogResult = await listCommunityCatalog({
-        cursor,
-        offset,
-        limit,
-        domain,
-        category,
-        publicationStatus,
-        q,
-        language,
-        datasetTypeId,
-        statuses: phase ? PHASE_STATUSES[phase] : undefined,
-        withPoolSummary,
+      body = await cachedPublicRead(key, async () => {
+        const catalog = await listCommunityCatalog({
+          cursor,
+          offset,
+          limit,
+          domain,
+          category,
+          publicationStatus,
+          q,
+          language,
+          datasetTypeId,
+          statuses: phase ? PHASE_STATUSES[phase] : undefined,
+          withPoolSummary,
+        });
+
+        const [types, languageCounts] = await Promise.all([
+          // List-card projection: the JSON contract columns (`fields`,
+          // `verification`, `sampleAssets`) are not part of the list. They
+          // made these 50 rows the single largest query by bytes on both
+          // deployments, and no list consumer read them; `/catalog/:id`
+          // still returns the full type.
+          prisma.datasetType.findMany({ where, select: PUBLIC_DATASET_TYPE_LIST_SELECT, orderBy: { usageCount: "desc" } }),
+          // Language options describe the whole community catalog, not the current
+          // page or the current filter — selecting one must never be able to hide
+          // a valid later page (same rule listOpenPoolsForContributor follows).
+          prisma.bounty.groupBy({
+            by: ["language"],
+            where: { kind: BountyKind.community, status: { notIn: [BountyStatus.cancelled] } },
+            _count: { _all: true },
+          }),
+        ]);
+
+        return {
+          bounties: catalog.bounties,
+          nextCursor: catalog.nextCursor,
+          total: catalog.total,
+          limit: catalog.limit,
+          offset: catalog.offset,
+          hasMore: catalog.hasMore,
+          datasetTypes: types,
+          filterOptions: {
+            // Folded by case, because the `language` filter itself is
+            // case-insensitive: listing both "typescript" and "TypeScript" offered
+            // two dropdown entries that are the same filter and return the same
+            // rows. The most-used spelling wins as the label.
+            languages: dedupeLanguagesByCase(languageCounts),
+          },
+        };
       });
     } catch (error) {
       // A stale cursor is the caller's state to fix, not a server fault.
+      // Errors are never cached, so a bad cursor cannot poison the key.
       if (error instanceof InvalidCursorError) return reply.badRequest(error.message);
       throw error;
     }
 
-    const [types, catalog, languageCounts] = await Promise.all([
-      prisma.datasetType.findMany({ where, select: PUBLIC_DATASET_TYPE_SELECT, orderBy: { usageCount: "desc" } }),
-      Promise.resolve(catalogResult),
-      // Language options describe the whole community catalog, not the current
-      // page or the current filter — selecting one must never be able to hide
-      // a valid later page (same rule listOpenPoolsForContributor follows).
-      prisma.bounty.groupBy({
-        by: ["language"],
-        where: { kind: BountyKind.community, status: { notIn: [BountyStatus.cancelled] } },
-        _count: { _all: true },
-      }),
-    ]);
-
-    return reply.send({
-      bounties: catalog.bounties,
-      nextCursor: catalog.nextCursor,
-      total: catalog.total,
-      limit: catalog.limit,
-      offset: catalog.offset,
-      hasMore: catalog.hasMore,
-      datasetTypes: types,
-      filterOptions: {
-        // Folded by case, because the `language` filter itself is
-        // case-insensitive: listing both "typescript" and "TypeScript" offered
-        // two dropdown entries that are the same filter and return the same
-        // rows. The most-used spelling wins as the label.
-        languages: dedupeLanguagesByCase(languageCounts),
-      },
-    });
+    return reply.send(body);
   });
 
   // GET /v1/community/validation-queue — open pools that have items waiting on
