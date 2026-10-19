@@ -1,0 +1,3 @@
+# Local run artifacts (python app.py)
+__pycache__/
+.gradio/

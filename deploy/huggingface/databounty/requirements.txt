@@ -1,0 +1,4 @@
+# Nothing to install. The Spaces image installs gradio[oauth,mcp] at the
+# README's sdk_version (which covers demo.launch(mcp_server=True)), and
+# huggingface_hub, httpx and pandas come with it. Pinning any of them here
+# would only fight the platform's pins on the next Gradio upgrade.
