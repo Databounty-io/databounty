@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { SubmissionStatus } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
+import { publicProfileVisibility } from "../../lib/public-profile-prefs.js";
 import { karmaTierForBalance } from "../../services/karma.js";
 
 const sitemapQuery = z.object({
@@ -68,11 +69,7 @@ export async function profileRoutes(app: FastifyInstance) {
       return reply.notFound("Profile not found or not public");
     }
 
-    const prefs = (user.publicProfilePrefs as Record<string, unknown> | null) ?? {};
-    const showKarma = typeof prefs.showKarma === "boolean" ? prefs.showKarma : true;
-    const showBadges = typeof prefs.showBadges === "boolean" ? prefs.showBadges : true;
-    const showDatasets = typeof prefs.showDatasets === "boolean" ? prefs.showDatasets : true;
-    const showActivity = typeof prefs.showActivity === "boolean" ? prefs.showActivity : true;
+    const { showKarma, showBadges, showDatasets, showActivity } = publicProfileVisibility(user.publicProfilePrefs);
 
     const body: Record<string, unknown> = {
       handle: user.handle,

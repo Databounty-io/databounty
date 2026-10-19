@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { PHASE_STATUSES, phaseSchema, queryBoolean, publicText, PUBLIC_DATASET_TYPE_SELECT, PUBLIC_DATASET_TYPE_LIST_SELECT, PUBLIC_HARNESS_SELECT } from "../../lib/public-query.js";
 import { prisma } from "../../lib/prisma.js";
+import { publicProfileVisibility } from "../../lib/public-profile-prefs.js";
 import { cachedPublicRead, publicReadCacheKey } from "../../lib/public-read-cache.js";
 import {
   getKarmaBreakdown,
@@ -1103,7 +1104,15 @@ export async function communityRoutes(app: FastifyInstance) {
     return reply.send({ total });
   });
 
-  // Public Member Profile
+  // Public Member Profile. Anonymous, so it follows the same disclosure rules
+  // as GET /v1/profiles/handle/:handle: a member who has not made their
+  // profile public is not found, and each section a public member hid is left
+  // out of the payload rather than sent anyway.
+  //
+  // The guard used to be `!profilePublic && !handle`, which let through every
+  // private member who had claimed a handle (onboarding requires one), and the
+  // stored preferences were selected but never read, so a hidden karma total,
+  // tier, rank and badge list all came back.
   app.get("/members/:handle", async (req, reply) => {
     const { handle } = req.params as { handle: string };
     const user = await prisma.user.findUnique({
@@ -1129,20 +1138,27 @@ export async function communityRoutes(app: FastifyInstance) {
       },
     });
 
-    if (!user || (!user.profilePublic && !user.handle)) {
+    if (!user || !user.handle || !user.profilePublic) {
       return reply.notFound("Member not found or profile is private");
     }
+    const { showKarma, showBadges, showActivity } = publicProfileVisibility(user.publicProfilePrefs);
 
     return reply.send({
       member: {
         id: user.id,
         displayName: user.displayName,
         handle: user.handle,
-        karmaTotal: user.karmaTotal,
-        tier: (await resolveKarmaTier(user.karmaTotal)).current,
-        leaderboardRank: user.leaderboardRank,
-        acceptedItemsCount: user._count.submissions,
-        badges: user.badges.map((b) => ({ badge: b.badge, earnedAt: b.earnedAt })),
+        // "Karma & tier" hides the balance and everything derived from it, and
+        // the rank is a karma ordering, so all three go together (SEC-10).
+        ...(showKarma
+          ? {
+              karmaTotal: user.karmaTotal,
+              tier: (await resolveKarmaTier(user.karmaTotal)).current,
+              leaderboardRank: user.leaderboardRank,
+            }
+          : {}),
+        ...(showActivity ? { acceptedItemsCount: user._count.submissions } : {}),
+        ...(showBadges ? { badges: user.badges.map((b) => ({ badge: b.badge, earnedAt: b.earnedAt })) } : {}),
         joinedAt: user.createdAt,
       },
     });

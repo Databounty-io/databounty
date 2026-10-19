@@ -159,15 +159,15 @@ describe("admin-configured karma.tiers reaches member-facing surfaces", () => {
     expect(afterMcp.tier.current.label).toBe("Dharma (live-config test)");
 
     // --- Public member profile also reads the live table -----------------
-    const { handle: memberHandle } = (await prisma.user.findUniqueOrThrow({
-      where: { id: userId },
-      select: { handle: true },
-    })) as { handle: string | null };
-    if (memberHandle) {
-      const profileRes = await app.inject({ method: "GET", url: `/v1/community/members/${memberHandle}` });
-      expect(profileRes.statusCode).toBe(200);
-      expect(profileRes.json().member.tier.tier).toBe("dharma");
-      expect(profileRes.json().member.tier.label).toBe("Dharma (live-config test)");
-    }
+    // Signup takes no handle and leaves the profile private, and the member
+    // endpoint serves only a public profile with a handle. This check used to
+    // sit behind `if (memberHandle)`, which signup never satisfied, so it never
+    // ran. Give the member both, as onboarding and the profile page would.
+    const memberHandle = `tier${Date.now().toString(36)}`;
+    await prisma.user.update({ where: { id: userId }, data: { handle: memberHandle, profilePublic: true } });
+    const profileRes = await app.inject({ method: "GET", url: `/v1/community/members/${memberHandle}` });
+    expect(profileRes.statusCode).toBe(200);
+    expect(profileRes.json().member.tier.tier).toBe("dharma");
+    expect(profileRes.json().member.tier.label).toBe("Dharma (live-config test)");
   });
 });
