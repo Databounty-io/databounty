@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { FlagStatus, SubmissionStatus } from "@prisma/client";
+import { awardLabel } from "../lib/badge-labels.js";
 import { prisma } from "../lib/prisma.js";
 import { getUserBadges } from "./badges.js";
 import {
@@ -211,7 +212,7 @@ export async function getProfileSummary(userId: string): Promise<ProfileSummary>
       key: b.badge.key,
       family: b.badge.family,
       icon: b.badge.icon,
-      label: b.badge.label,
+      label: awardLabel(b.badge, b.measuredValue),
       criteria: b.badge.criteria,
       earnedAt: b.earnedAt,
       manual: !b.badge.autoGranted,

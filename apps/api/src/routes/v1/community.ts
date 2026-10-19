@@ -3,6 +3,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { PHASE_STATUSES, phaseSchema, queryBoolean, publicText, PUBLIC_DATASET_TYPE_SELECT, PUBLIC_DATASET_TYPE_LIST_SELECT, PUBLIC_HARNESS_SELECT } from "../../lib/public-query.js";
+import { catalogLabel } from "../../lib/badge-labels.js";
 import { prisma } from "../../lib/prisma.js";
 import { cachedPublicRead, publicReadCacheKey } from "../../lib/public-read-cache.js";
 import {
@@ -1292,7 +1293,7 @@ export async function communityRoutes(app: FastifyInstance) {
       key: b.key,
       family: b.family,
       icon: b.icon,
-      label: b.label,
+      label: catalogLabel(b),
       criteria: b.criteria,
       earned: earnedBadgeIds.has(b.id),
     }));

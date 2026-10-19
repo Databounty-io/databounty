@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { FlagStatus, SubmissionStatus, UserStatus, type Badge, type BadgeMetric, type Prisma } from "@prisma/client";
+import { renderLabel } from "../lib/badge-labels.js";
 import { prisma } from "../lib/prisma.js";
 import { notifyEvent } from "./notifications.js";
+
+// Label rendering lives in lib/badge-labels.ts so routes can use it without
+// loading this module; re-exported for existing callers.
+export { renderLabel };
 
 /**
  * Badge catalog reads, the auto-award evaluator, and admin grant/revoke.
@@ -120,13 +125,6 @@ export function qualifiesFor(
   if (badge.metric === "zero_abandons") return metrics.abandons === 0;
   if (badge.metric === "zero_dismissed_flags") return metrics.dismissedFlags === 0;
   return true;
-}
-
-/** Substitutes the measured amount into a catalog label. Admins write labels
- *  like "{value} accepted items"; a label without the token renders verbatim. */
-export function renderLabel(label: string, measured: number | null): string {
-  if (measured === null) return label;
-  return label.replaceAll("{value}", measured.toLocaleString("en-US"));
 }
 
 /**

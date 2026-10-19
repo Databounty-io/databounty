@@ -3,6 +3,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { SubmissionStatus } from "@prisma/client";
+import { awardLabel } from "../../lib/badge-labels.js";
 import { prisma } from "../../lib/prisma.js";
 import { karmaTierForBalance } from "../../services/karma.js";
 
@@ -102,7 +103,11 @@ export async function profileRoutes(app: FastifyInstance) {
         include: { badge: true },
         orderBy: { earnedAt: "desc" },
       });
-      body.badges = awards.map((a) => ({ id: a.badge.id, family: a.badge.family, label: a.badge.label }));
+      body.badges = awards.map((a) => ({
+        id: a.badge.id,
+        family: a.badge.family,
+        label: awardLabel(a.badge, a.measuredValue),
+      }));
     }
 
     if (showActivity) {
