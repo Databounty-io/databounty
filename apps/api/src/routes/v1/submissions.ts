@@ -19,6 +19,7 @@ import { notifyAdminsEvent, notifyEvent } from "../../services/notifications.js"
 import { GenerationMethod, FlagReason, DisputeStatus, SubmissionStatus, ApiKeyScope } from "@prisma/client";
 import { disputeAcceptedSubmission, SponsorEvidenceError } from "../../services/sponsor-evidence.js";
 import { llmValidationEnabled } from "../../services/admin-settings.js";
+import { ItemContractError, itemContractErrorBody } from "../../services/item-contract.js";
 import { openRouterConfigured } from "../../services/llm-client.js";
 
 const singleSubmissionBody = z.object({
@@ -71,6 +72,7 @@ export async function submissionRoutes(app: FastifyInstance) {
 
       return reply.status(201).send({ submission });
     } catch (err: any) {
+      if (err instanceof ItemContractError) return reply.status(400).send(itemContractErrorBody(err));
       return reply.badRequest(err.message);
     }
   });
@@ -90,6 +92,7 @@ export async function submissionRoutes(app: FastifyInstance) {
 
       return reply.status(201).send(result);
     } catch (err: any) {
+      if (err instanceof ItemContractError) return reply.status(400).send(itemContractErrorBody(err));
       return reply.badRequest(err.message);
     }
   });
@@ -169,6 +172,7 @@ export async function submissionRoutes(app: FastifyInstance) {
       // body was fine, the submission just isn't (or is no longer) revisable.
       // Flattening all of these into 400 gave an agent no way to tell "fix
       // your payload" from "you are out of attempts".
+      if (err instanceof ItemContractError) return reply.status(400).send(itemContractErrorBody(err));
       if (err instanceof ReviseSubmissionError) {
         if (err.code === "not_found") return reply.notFound(err.message);
         return reply.conflict(err.message);

@@ -186,6 +186,52 @@ describe("runUploadDraftSubmitJob — real ingest", () => {
     for (const s of submissions) expect(s.contributorUserId).toBe(userId);
   });
 
+  it("re-checks rows against the pool's field contract: a row that no longer conforms becomes a rejected row, not a submission", async () => {
+    // Rows already past the parse, but blank where the contract needs a value:
+    // a draft parsed before the contract check existed, or one whose pool
+    // contract was tightened while it waited for review.
+    const bounty = await createPool({ targetItems: 1000 });
+    const draft = await createSubmittingDraft({
+      bountyId: bounty.id,
+      rows: [{ payload: { instruction: "a" } }, { payload: { instruction: "  " } }, { payload: { instruction: "c" } }],
+    });
+
+    await runUploadDraftSubmitJob(draft.id);
+
+    const updated = await prisma.submissionUploadDraft.findUniqueOrThrow({ where: { id: draft.id } });
+    expect(updated.status).toBe("submitted");
+    expect(updated.submitError).toBeNull();
+    expect(updated.previewSummary).toMatchObject({ submittedRows: 2, rejectedAtSubmit: 1, stoppedEarly: false });
+
+    const items = await prisma.submissionUploadDraftItem.findMany({
+      where: { draftId: draft.id },
+      orderBy: { rowNumber: "asc" },
+    });
+    expect(items[0]!.submissionId).not.toBeNull();
+    expect(items[1]).toMatchObject({
+      submissionId: null,
+      errorCode: "FIELD_CONTRACT_MISMATCH",
+      errorMessage: '"instruction" is required',
+    });
+    expect(items[2]!.submissionId).not.toBeNull();
+    expect(await prisma.submission.count({ where: { bountyId: bounty.id } })).toBe(2);
+  });
+
+  it("finishes cleanly when every remaining row fails the contract, submitting nothing", async () => {
+    const bounty = await createPool({ targetItems: 1000 });
+    const draft = await createSubmittingDraft({
+      bountyId: bounty.id,
+      rows: [{ payload: { instruction: "" } }, { payload: { instruction: " " } }],
+    });
+
+    await runUploadDraftSubmitJob(draft.id);
+
+    const updated = await prisma.submissionUploadDraft.findUniqueOrThrow({ where: { id: draft.id } });
+    expect(updated.status).toBe("submitted");
+    expect(updated.previewSummary).toMatchObject({ submittedRows: 0, rejectedAtSubmit: 2 });
+    expect(await prisma.submission.count({ where: { bountyId: bounty.id } })).toBe(0);
+  });
+
   it("is a safe no-op when the draft is not in status submitting (e.g. still review_ready, or already finished)", async () => {
     const bounty = await createPool({ targetItems: 1000 });
     const draft = await createSubmittingDraft({

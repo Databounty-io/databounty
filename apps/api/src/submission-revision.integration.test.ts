@@ -138,7 +138,7 @@ function payload(seed: string) {
     tests:
       "const { test } = require('node:test');\nconst assert = require('node:assert');\nconst { f } = require('./solution.js');\ntest('adds', () => { assert.strictEqual(f(2,3), 5); });",
     explanation: `revision fixture ${seed}`,
-    bug_type: "off_by_one",
+    bug_type: "logic",
   };
 }
 

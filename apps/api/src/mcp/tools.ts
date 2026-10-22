@@ -25,6 +25,7 @@ import {
   rerunSubmissionValidation,
   RerunValidationError,
 } from "../services/submissions.js";
+import { ItemContractError } from "../services/item-contract.js";
 import {
   listAvailableAudits,
   listMyAuditWindows,
@@ -393,6 +394,7 @@ export const tools: McpTool[] = [
       "Submit completed dataset items to an open community pool. No claim step exists — read get_pool_contract first, then send items that meet that contract. " +
       "Read the contract's live `submitLimits` before choosing a path. At or below its inline limit, submit once; above it, use create_upload_review_link so the contributor can review parsed rows in the browser. Do not split a normal bulk contribution into repeated inline calls. " +
       "SELF-REVIEW EVERY ITEM against the contract before calling: check the required fields, the declared difficulty, and the verification requirements. Never infer an outcome from a pending or absent validation result; only the recorded final status is authoritative. " +
+      "If any item is missing a required field or uses a value an enum field does not allow, the whole call is refused before anything is written, and the error names each item and field (code ITEM_FIELDS_INVALID). " +
       "Declare `generationMethod` honestly for each item. " +
       "THE RETURNED `created` COUNT IS ROWS WRITTEN, NOT ITEMS ACCEPTED: duplicates are written straight to `rejected` at intake and are never queued for validation. Inspect each returned submission with check_submission before telling the operator anything was accepted. " +
       "Validation runs asynchronously; karma is awarded per item on final acceptance, never for submitting alone, and where a dispute window applies it is held until that window closes.",
@@ -465,6 +467,7 @@ export const tools: McpTool[] = [
         ) {
           throw new McpToolError(err.message, 400);
         }
+        if (err instanceof ItemContractError) throw new McpToolError(err.message, 400, err.code);
         throw err;
       }
     },
@@ -503,6 +506,7 @@ export const tools: McpTool[] = [
       "SEND THE COMPLETE CORRECTED ITEM, NOT A PATCH: `payloadJson` REPLACES the whole stored payload. Start from the existing payload and edit it; any field you omit is gone. " +
       "Self-review the corrected item against get_pool_contract before sending it. " +
       "A revision can be refused for four reasons: the submission is not yours or does not exist, its status is not revisable, the pool has closed, or the revision attempt budget is exhausted — and exhausting that budget terminally rejects the item, so do not spend attempts on guesses. " +
+      "A corrected payload that is missing a required field, or uses a value an enum field does not allow, is refused (code ITEM_FIELDS_INVALID) without spending an attempt. " +
       "If the item was correct and the decision was wrong, use dispute_submission instead: a dispute does not consume a revision attempt. " +
       "A fixed item that is then accepted still earns the pool's per-item karma — returned items are the fastest karma already in hand.",
     scope: "contribute",
@@ -538,6 +542,7 @@ export const tools: McpTool[] = [
         if (err instanceof ReviseSubmissionError) {
           throw new McpToolError(err.message, err.code === "not_found" ? 404 : 409, err.code);
         }
+        if (err instanceof ItemContractError) throw new McpToolError(err.message, 400, err.code);
         throw err;
       }
     },

@@ -400,6 +400,18 @@ describe("upload-review-drafts: rejected-rows and source-slot", () => {
 });
 
 
+/** A row that satisfies the seeded `debugging` contract the test pool is
+ * minted from, distinct per row so none is deduplicated. */
+function debuggingRow(n: number) {
+  return {
+    prompt: `Fix the off-by-one in row ${n}`,
+    broken_code: `function add${n}(a, b) { return a + b + 1; }`,
+    fixed_code: `function add${n}(a, b) { return a + b; }`,
+    tests: `assert.strictEqual(add${n}(2, 3), 5);`,
+    explanation: `Removed the stray +1 from row ${n}.`,
+  };
+}
+
 /** Directly seeds a draft at status "review_ready" with the given usable/
  * unusable rows — what a real `bulk_source.parse` run would have produced —
  * without driving an actual file upload/scan/parse. `usableCount` rows carry
@@ -414,7 +426,7 @@ async function seedReviewReadyDraft(ownerCookie: string, bountyId: string, usabl
     ...Array.from({ length: usableCount }, (_, i) => ({
       draftId,
       rowNumber: i + 1,
-      payload: { instruction: `row ${i + 1}` },
+      payload: debuggingRow(i + 1),
       errorCode: null as string | null,
       errorMessage: null as string | null,
     })),

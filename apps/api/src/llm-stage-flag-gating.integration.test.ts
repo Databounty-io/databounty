@@ -191,7 +191,7 @@ async function submitAndRunValidation(bountyId: string, contributorCookie: strin
         tests:
           `const { test } = require('node:test');\nconst assert = require('node:assert');\nconst { add${label} } = require('./solution.js');\ntest('adds ${label}', () => { assert.strictEqual(add${label}(2,3), 5); });`,
         explanation: "removed +1",
-        bug_type: "off_by_one",
+        bug_type: "logic",
       },
     },
   });

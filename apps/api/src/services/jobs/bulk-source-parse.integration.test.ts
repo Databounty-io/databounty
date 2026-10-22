@@ -60,7 +60,10 @@ beforeAll(async () => {
       origin: "platform",
       category: "implementation",
       trustTier: "llm_verified",
-      fields: [{ key: "instruction", label: "Instruction", role: "instruction", required: true }],
+      fields: [
+        { key: "instruction", label: "Instruction", role: "instruction", required: true },
+        { key: "difficulty", label: "Difficulty", role: "enum", options: ["easy", "hard"] },
+      ],
       verification: { pipeline: ["schema", "human_audit"] },
     },
   });
@@ -182,6 +185,61 @@ describe("runBulkSourceParseJob — draft status/previewSummary contract with ap
 
     const updatedArtifact = await prisma.artifact.findUniqueOrThrow({ where: { id: artifact.id } });
     expect(updatedArtifact.bulkParseStatus).toBe(BulkParseStatus.done);
+  });
+
+  it("rejects rows that break the pool's field contract, with a reason per row, and keeps what they contained", async () => {
+    const jsonl = [
+      JSON.stringify({ instruction: "conforms", difficulty: "easy" }),
+      JSON.stringify({ instruction: "   " }),
+      JSON.stringify({ instruction: "wrong level", difficulty: "medium" }),
+      JSON.stringify({ difficulty: "extreme" }),
+      JSON.stringify({ instruction: "also conforms" }),
+    ].join("\n");
+    const { artifact, draft } = await createArtifactAndDraft({
+      bytes: Buffer.from(jsonl, "utf8"),
+      filename: "contract.jsonl",
+      contentType: "application/x-ndjson",
+    });
+
+    const result = await runBulkSourceParseJob(artifact.id);
+    expect(result).toEqual({ created: 2, done: true });
+
+    const rows = await prisma.submissionUploadDraftItem.findMany({
+      where: { draftId: draft.id },
+      orderBy: { rowNumber: "asc" },
+      select: { rowNumber: true, payload: true, errorCode: true, errorMessage: true },
+    });
+    expect(rows.map((row) => [row.rowNumber, row.errorCode, row.errorMessage])).toEqual([
+      [1, null, null],
+      [2, "FIELD_CONTRACT_MISMATCH", '"instruction" is required'],
+      [3, "FIELD_CONTRACT_MISMATCH", '"difficulty" must be one of "easy", "hard"'],
+      [4, "FIELD_CONTRACT_MISMATCH", '"instruction" is required; "difficulty" must be one of "easy", "hard"'],
+      [5, null, null],
+    ]);
+    expect(rows[2]!.payload).toEqual({ instruction: "wrong level", difficulty: "medium" });
+
+    const updated = await prisma.submissionUploadDraft.findUniqueOrThrow({ where: { id: draft.id } });
+    expect(updated.status).toBe("review_ready");
+    const summary = updated.previewSummary as Record<string, unknown>;
+    expect(summary).toMatchObject({ rowsRead: 5, acceptedRows: 2, rejectedRows: 3, parserVersion: "2" });
+  });
+
+  it("applies the contract to CSV sources too, where a blank cell is a missing value", async () => {
+    const csv = ["instruction,difficulty", "first,hard", ",easy", "third,"].join("\n");
+    const { artifact, draft } = await createArtifactAndDraft({
+      bytes: Buffer.from(csv, "utf8"),
+      filename: "contract.csv",
+      contentType: "text/csv",
+    });
+
+    await runBulkSourceParseJob(artifact.id);
+
+    const rows = await prisma.submissionUploadDraftItem.findMany({
+      where: { draftId: draft.id },
+      orderBy: { rowNumber: "asc" },
+      select: { errorCode: true },
+    });
+    expect(rows.map((row) => row.errorCode)).toEqual([null, "FIELD_CONTRACT_MISMATCH", null]);
   });
 
   it("never resurrects a draft that was cancelled while the parse job was still mid-flight", async () => {

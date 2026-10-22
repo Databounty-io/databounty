@@ -52,6 +52,7 @@ import { enqueueJob, dbJobQueue } from "../jobs.js";
 import { bandsFromSignature, computeMinHashSignature, LSH_CONFIG } from "../dedup-lsh.js";
 import { computeDedupeKey } from "../submissions.js";
 import { attachFileArtifacts, fileFieldsForBounty, type AttachRow } from "../artifact-attach.js";
+import { contractFieldsForBounty, contractRowError } from "../item-contract.js";
 
 /** Rows processed per transaction — matches the sibling `bulk_source.parse`
  * job's `CHUNK_SIZE` convention (src/services/jobs/bulk-source-parse.ts),
@@ -171,7 +172,12 @@ export async function enqueueUploadDraftSubmit(
  * onto whatever `previewSummary` shape currently exists rather than assuming
  * one, since the sibling parse job (owned by another agent) may rename its
  * fields concurrently. */
-async function finalizeDraft(draftId: string, stopReason: StopReason, submittedRows: number): Promise<void> {
+async function finalizeDraft(
+  draftId: string,
+  stopReason: StopReason,
+  submittedRows: number,
+  rejectedAtSubmit = 0,
+): Promise<void> {
   const current = await prisma.submissionUploadDraft.findUnique({
     where: { id: draftId },
     select: { previewSummary: true },
@@ -195,6 +201,9 @@ async function finalizeDraft(draftId: string, stopReason: StopReason, submittedR
         submittedRows,
         stoppedEarly: stopReason !== null,
         ...(stopReason ? { stopReason } : {}),
+        // Rows that passed the parse but no longer matched the pool's field
+        // contract when submitted; they are in the rejected-rows report.
+        ...(rejectedAtSubmit > 0 ? { rejectedAtSubmit } : {}),
       } as Prisma.InputJsonValue,
     },
   });
@@ -226,15 +235,17 @@ export async function runUploadDraftSubmitJob(draftId: string): Promise<void> {
 
   let cursor = draft.submitCursorRowNumber ?? 0;
   let totalCreated = 0;
+  let rejectedAtSubmit = 0;
   let stopReason: StopReason = null;
+  const contractFields = await contractFieldsForBounty(prisma, bountyId);
 
   for (;;) {
-    const rows = await prisma.submissionUploadDraftItem.findMany({
+    const fetched = await prisma.submissionUploadDraftItem.findMany({
       where: { draftId, errorCode: null, submissionId: null, rowNumber: { gt: cursor } },
       orderBy: { rowNumber: "asc" },
       take: CHUNK_SIZE,
     });
-    if (rows.length === 0) break; // natural completion — nothing left to submit
+    if (fetched.length === 0) break; // natural completion — nothing left to submit
 
     const bounty = await prisma.bounty.findUnique({
       where: { id: bountyId },
@@ -251,6 +262,28 @@ export async function runUploadDraftSubmitJob(draftId: string): Promise<void> {
       stopReason = "pool_full";
       break;
     }
+
+    // The parse already rejected rows that broke the field contract, but the
+    // contract can change while a draft waits for review, and drafts parsed
+    // before that check existed were never checked. A row that does not
+    // conform now becomes a rejected row instead of a submission; marking it
+    // also takes it out of the query above, so the loop moves past it.
+    const rows: typeof fetched = [];
+    const nonConforming: { id: string; errorCode: string; errorMessage: string }[] = [];
+    for (const row of fetched) {
+      const error = contractRowError(contractFields, (row.payload ?? {}) as Record<string, unknown>);
+      if (error) nonConforming.push({ id: row.id, ...error });
+      else rows.push(row);
+    }
+    if (nonConforming.length > 0) {
+      await prisma.$transaction(
+        nonConforming.map(({ id, errorCode, errorMessage }) =>
+          prisma.submissionUploadDraftItem.update({ where: { id }, data: { errorCode, errorMessage } }),
+        ),
+      );
+      rejectedAtSubmit += nonConforming.length;
+    }
+    if (rows.length === 0) continue;
 
     let chunk = rows;
     let chunkExhaustsPool = false;
@@ -365,5 +398,5 @@ export async function runUploadDraftSubmitJob(draftId: string): Promise<void> {
     }
   }
 
-  await finalizeDraft(draftId, stopReason, totalCreated);
+  await finalizeDraft(draftId, stopReason, totalCreated, rejectedAtSubmit);
 }

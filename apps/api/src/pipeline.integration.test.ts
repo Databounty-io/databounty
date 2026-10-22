@@ -315,7 +315,7 @@ describe("worker job processing", () => {
           tests:
             "const { test } = require('node:test');\nconst assert = require('node:assert');\nconst { add } = require('./solution.js');\ntest('adds', () => { assert.strictEqual(add(2,3), 5); });",
           explanation: "removed +1",
-          bug_type: "off_by_one",
+          bug_type: "logic",
         },
       },
     });
@@ -440,7 +440,7 @@ describe("validation.dedupe.reject_threshold admin setting", () => {
             tests:
               `const { test } = require('node:test');\nconst assert = require('node:assert');\nconst { add${label} } = require('./solution.js');\ntest('adds ${label}', () => { assert.strictEqual(add${label}(2,3), 5); });`,
             explanation: "removed +1",
-            bug_type: "off_by_one",
+            bug_type: "logic",
           },
         },
       });
@@ -563,7 +563,7 @@ describe("validation.dedupe.reject_threshold admin setting", () => {
             tests:
               `const { test } = require('node:test');\nconst assert = require('node:assert');\nconst { add${label} } = require('./solution.js');\ntest('adds ${label}', () => { assert.strictEqual(add${label}(2,3), 5); });`,
             explanation: "removed +1",
-            bug_type: "off_by_one",
+            bug_type: "logic",
           },
         },
       });
@@ -673,7 +673,7 @@ describe("batches -> submissions -> audits happy path", () => {
         tests:
           `const { test } = require('node:test');\nconst assert = require('node:assert');\nconst { fn${i} } = require('./solution.js');\ntest('case ${i}', () => { assert.strictEqual(fn${i}(2,3), 5); });`,
         explanation: "removed +1 offset",
-        bug_type: "off_by_one",
+        bug_type: "logic",
       },
     }));
 
@@ -887,7 +887,7 @@ describe("ai_attribution stage", () => {
           tests:
             `const { test } = require('node:test');\nconst assert = require('node:assert');\nconst { aiAttrFn${i} } = require('./solution.js');\ntest('case ${i}', () => { assert.strictEqual(aiAttrFn${i}(2,3), 5); });`,
           explanation,
-          bug_type: "off_by_one",
+          bug_type: "logic",
         },
       };
     }
@@ -1174,7 +1174,7 @@ describe("validation.llm.enabled admin setting", () => {
           tests:
             `const { test } = require('node:test');\nconst assert = require('node:assert');\nconst { add${label} } = require('./solution.js');\ntest('adds ${label}', () => { assert.strictEqual(add${label}(2,3), 5); });`,
           explanation: "removed +1",
-          bug_type: "off_by_one",
+          bug_type: "logic",
         },
       },
     });

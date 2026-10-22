@@ -6,6 +6,7 @@ import { PHASE_STATUSES, phaseSchema, publicText } from "../../lib/public-query.
 import { prisma } from "../../lib/prisma.js";
 import { getCommunityPool, getPoolContractForBounty, listCommunityPools } from "../../services/bounties.js";
 import { createBountyPoolItems, listContributorPoolSubmissions } from "../../services/submissions.js";
+import { ItemContractError, itemContractErrorBody } from "../../services/item-contract.js";
 import { awardOrHoldAcceptedItemKarma } from "../../services/karma-holds.js";
 import { acceptedItemKarmaForBounty, effectiveTypePricing, getKarmaMatrix, getKarmaRules } from "../../services/karma.js";
 import { listSponsorSubmissionEvidence, getSponsorSubmissionEvidence, SponsorEvidenceError } from "../../services/sponsor-evidence.js";
@@ -217,6 +218,7 @@ export async function bountyRoutes(app: FastifyInstance) {
       });
       return reply.status(201).send({ submissions: created });
     } catch (err: any) {
+      if (err instanceof ItemContractError) return reply.status(400).send(itemContractErrorBody(err));
       return reply.badRequest(err.message);
     }
   });

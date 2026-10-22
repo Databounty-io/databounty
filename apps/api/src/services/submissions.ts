@@ -11,6 +11,7 @@ import { decodeDateCursor, encodeCursor, filterKeyOf, takePage } from "../lib/ke
 import { acquireBountyLock } from "../lib/bounty-lock.js";
 import { getAdminSetting } from "./admin-settings.js";
 import { getPoolSubmitLimits, SubmissionItemLimitError } from "./submission-limits.js";
+import { assertItemsMatchContract, contractFieldsForBounty } from "./item-contract.js";
 import { dbJobQueue } from "./jobs.js";
 import { notifyEvent, notifyUser } from "./notifications.js";
 import { bandsFromSignature, computeMinHashSignature, LSH_CONFIG } from "./dedup-lsh.js";
@@ -269,6 +270,8 @@ export async function createBountyPoolItems(params: {
   if (target > 0 && Number(bounty.acceptedItems) >= target) {
     throw new Error("This pool already reached its item target.");
   }
+  // Refused before anything is written, so a bad batch never half-submits.
+  assertItemsMatchContract(await contractFieldsForBounty(prisma, params.bountyId), params.items);
 
   return prisma.$transaction(async (tx) => {
     // C10 fix, layer 1: a per-bounty Postgres advisory transaction lock
@@ -634,6 +637,7 @@ export async function createPoolSubmission(params: {
   if (!bounty || bounty.status !== "active") {
     throw new Error("Dataset pool is not active or does not exist");
   }
+  assertItemsMatchContract(await contractFieldsForBounty(prisma, params.bountyId), [params.payloadJson]);
 
   const dedupeKey = computeDedupeKey(params.payloadJson);
 
@@ -748,6 +752,10 @@ export async function submitPoolBatchItems(params: {
   if (target > 0 && Number(bounty.acceptedItems) >= target) {
     throw new Error("This pool already reached its item target.");
   }
+  assertItemsMatchContract(
+    await contractFieldsForBounty(prisma, params.bountyId),
+    params.items.map((item) => item.payloadJson),
+  );
 
   return prisma.$transaction(async (tx) => {
     // C10 fix, layer 1 — see the identical comment in createBountyPoolItems
@@ -1017,6 +1025,10 @@ export async function reviseSubmission(params: {
       "This community pool has closed; its submissions can no longer be revised",
     );
   }
+
+  // Checked before the attempt is reserved below, so a malformed revision does
+  // not use up one of the contributor's limited revisions.
+  assertItemsMatchContract(await contractFieldsForBounty(prisma, sub.bounty.id), [params.payloadJson]);
 
   const maxRevisions = await getMaxRevisions();
   const isUnlimited = maxRevisions === 0;

@@ -134,6 +134,10 @@ export function requiredMissing(type: DatasetType | null, payload: Record<string
       if (field.role === "file" && (field.maxCount ?? 1) > 1) {
         return !Array.isArray(raw) || raw.length < (field.minCount ?? 1);
       }
+      // Same rule the API applies at intake (apps/api services/item-contract.ts):
+      // an empty list or object is as missing as an empty string.
+      if (Array.isArray(raw)) return raw.length === 0;
+      if (raw !== null && typeof raw === "object") return Object.keys(raw).length === 0;
       return stringValue(raw).trim() === "";
     })
     .map((field) => field.key);

@@ -31,6 +31,7 @@ import { ArtifactKind, ArtifactStatus, BulkParseStatus, type Prisma } from "@pri
 import { prisma } from "../../lib/prisma.js";
 import { getArtifactData } from "../storage.js";
 import { enqueueJob, workspaceKeyForUser } from "../jobs.js";
+import { contractFieldsForBounty, contractRowError, type ContractField } from "../item-contract.js";
 
 /** Rows committed per transaction. Small enough to stay well under the
  * statement/tx timeout, large enough that a huge source does not spend all its
@@ -46,8 +47,9 @@ const ROWS_PER_RUN = 5_000;
  * Distinct from `Artifact.parserVersion` (the format-registry handler
  * version) — this one identifies THIS bulk-source row parser, so the web
  * review page can show a stable provenance string for the summary it
- * displays. Bump it if `parseBulkSource`'s row-shape rules change. */
-const BULK_SOURCE_PARSER_VERSION = "1";
+ * displays. Bump it if `parseBulkSource`'s row-shape rules change.
+ * 2: rows are also checked against the pool's field contract. */
+const BULK_SOURCE_PARSER_VERSION = "2";
 
 /** Draft statuses that are still "in flight" toward review — a completion or
  * failure write is only honest while the draft is still in one of these.
@@ -209,6 +211,21 @@ export function parseBulkSource(text: string, filename: string, contentType: str
 }
 
 /**
+ * Marks parsed rows that break the pool's field contract (a required field
+ * missing, or an enum value the type does not allow) as rejected rows, the
+ * same rule the REST and MCP intake paths enforce. The payload is kept so the
+ * row's content is not lost; only rows without an error are ever submitted.
+ */
+export function applyFieldContract(rows: ParsedRow[], fields: ContractField[]): ParsedRow[] {
+  if (fields.length === 0) return rows;
+  return rows.map((row) => {
+    if (row.errorCode !== null || row.payload === null) return row;
+    const error = contractRowError(fields, row.payload);
+    return error ? { ...row, ...error } : row;
+  });
+}
+
+/**
  * `bulk_source.parse` handler.
  *
  * Fails closed on every precondition: a source that is not `ready` (still
@@ -231,7 +248,7 @@ export async function runBulkSourceParseJob(artifactId: string): Promise<{ creat
 
   const draft = await prisma.submissionUploadDraft.findUnique({
     where: { sourceArtifactId: artifact.id },
-    select: { id: true, status: true },
+    select: { id: true, status: true, bountyId: true },
   });
   if (!draft) throw new BulkParseError("no upload review draft references this source", true);
 
@@ -242,9 +259,10 @@ export async function runBulkSourceParseJob(artifactId: string): Promise<{ creat
     throw new BulkParseError("BULK_SOURCE_TOO_LARGE", true);
   }
 
+  const fields = draft.bountyId ? await contractFieldsForBounty(prisma, draft.bountyId) : [];
   let rows: ParsedRow[];
   try {
-    rows = parseBulkSource(bytes.toString("utf8"), artifact.filename, artifact.contentType);
+    rows = applyFieldContract(parseBulkSource(bytes.toString("utf8"), artifact.filename, artifact.contentType), fields);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await markFailed(artifact.id, draft.id, message);

@@ -34,8 +34,10 @@ const TOKEN = `afa_${process.pid}_${Math.floor(Math.random() * 1e9)}`;
 let contributorId = "";
 let otherUserId = "";
 let datasetTypeId = "";
+let optionalFileTypeId = "";
 let bountyId = "";
 let otherBountyId = "";
+let optionalFileBountyId = "";
 
 /** A payload for the file-bearing dataset type below. `screenshot` is the
  * `role: "file"` field, so its value IS an artifact id — the same convention
@@ -69,13 +71,13 @@ async function makeArtifact(overrides: {
   });
 }
 
-async function makeBounty(label: string): Promise<string> {
+async function makeBounty(label: string, typeId = datasetTypeId): Promise<string> {
   const b = await prisma.bounty.create({
     data: {
       kind: "community",
       title: `artifact-attach ${label} ${TOKEN}`,
       description: "probe",
-      datasetTypeId,
+      datasetTypeId: typeId,
       requesterUserId: contributorId,
       status: "active",
       targetItems: 100,
@@ -134,12 +136,35 @@ beforeAll(async () => {
   });
   datasetTypeId = dt.id;
 
+  // The same contract with the file field optional, for the one case where an
+  // item legitimately carries no file.
+  const optional = await prisma.datasetType.create({
+    data: {
+      id: `attach_probe_optional_${TOKEN}`,
+      domain: "coding",
+      name: "Attach probe (optional file field)",
+      description: "Integration-test dataset type carrying one optional role:file field.",
+      status: "draft",
+      origin: "platform",
+      category: "implementation",
+      trustTier: "expert_audited",
+      fields: [
+        { key: "prompt", label: "Prompt", role: "prompt", required: true },
+        { key: "screenshot", label: "Screenshot", role: "file" },
+      ],
+      verification: { pipeline: ["schema", "dedupe"], dedupeFields: ["prompt"], auditOptions: [100] },
+    },
+    select: { id: true },
+  });
+  optionalFileTypeId = optional.id;
+
   bountyId = await makeBounty("main");
   otherBountyId = await makeBounty("other");
+  optionalFileBountyId = await makeBounty("optional-file", optionalFileTypeId);
 });
 
 afterAll(async () => {
-  const bounties = [bountyId, otherBountyId].filter(Boolean);
+  const bounties = [bountyId, otherBountyId, optionalFileBountyId].filter(Boolean);
   if (bounties.length) {
     const subs = await prisma.submission.findMany({ where: { bountyId: { in: bounties } }, select: { id: true } });
     if (subs.length) {
@@ -151,7 +176,8 @@ afterAll(async () => {
     await prisma.submission.deleteMany({ where: { bountyId: { in: bounties } } });
     await prisma.bounty.deleteMany({ where: { id: { in: bounties } } });
   }
-  if (datasetTypeId) await prisma.datasetType.deleteMany({ where: { id: datasetTypeId } });
+  const typeIds = [datasetTypeId, optionalFileTypeId].filter(Boolean);
+  if (typeIds.length) await prisma.datasetType.deleteMany({ where: { id: { in: typeIds } } });
   await prisma.user.deleteMany({ where: { id: { in: [contributorId, otherUserId].filter(Boolean) } } });
   await prisma.$disconnect();
 });
@@ -334,14 +360,26 @@ describe("attachFileArtifacts via the open-pool intake paths", { timeout: 120_00
     ).toBeNull();
   });
 
-  it("submits normally when the contract declares a file field and the item omits it", async () => {
+  it("refuses an item that omits a required file field, before anything is written", async () => {
     const before = await submissionCount();
+    await expect(
+      submitPoolBatchItems({
+        bountyId,
+        contributorUserId: contributorId,
+        items: [{ title: "attach no file", payloadJson: payload(null, "nofile") }],
+      })
+    ).rejects.toThrow('"screenshot" is required');
+    expect(await submissionCount()).toBe(before);
+  });
+
+  it("submits normally when the contract's file field is optional and the item omits it", async () => {
+    const before = await submissionCount(optionalFileBountyId);
     const result = await submitPoolBatchItems({
-      bountyId,
+      bountyId: optionalFileBountyId,
       contributorUserId: contributorId,
-      items: [{ title: "attach no file", payloadJson: payload(null, "nofile") }],
+      items: [{ title: "attach no file", payloadJson: payload(null, "nofile-optional") }],
     });
     expect(result.created).toBe(1);
-    expect(await submissionCount()).toBe(before + 1);
+    expect(await submissionCount(optionalFileBountyId)).toBe(before + 1);
   });
 });
