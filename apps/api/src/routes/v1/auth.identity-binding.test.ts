@@ -50,6 +50,9 @@ const H = vi.hoisted(() => {
     googleConfigured: true,
     googleIdentity: null as null | Record<string, unknown>,
     verifyCalls: 0,
+    /** Every bulk revocation the reclaim path issues, by model. */
+    revocations: [] as { model: string; where: Record<string, unknown> }[],
+    apiKeyCacheInvalidations: [] as string[],
   };
 
   /** Equality-only `where` matching — enough for every lookup in auth.ts. */
@@ -128,13 +131,40 @@ const H = vi.hoisted(() => {
     },
   };
 
+  /** A credential table the reclaim path revokes in bulk: records the call. */
+  function revocable(model: string) {
+    const record = async ({ where }: { where: Record<string, unknown> }) => {
+      state.revocations.push({ model, where });
+      return { count: 0 };
+    };
+    return { updateMany: record, deleteMany: record };
+  }
+
   const prismaMock: Record<string, unknown> = {
     user: userDelegate,
     userRole: {
       findMany: async ({ where }: { where?: { userId?: string } } = {}) =>
         state.userRoles.filter((r) => !where?.userId || r.userId === where.userId),
     },
-    session: { deleteMany: async () => ({ count: 0 }) },
+    session: {
+      deleteMany: async ({ where }: { where?: { userId?: string } } = {}) => {
+        let count = 0;
+        for (const [token, userId] of state.sessions) {
+          if (!where?.userId || userId === where.userId) {
+            state.sessions.delete(token);
+            count += 1;
+          }
+        }
+        return { count };
+      },
+    },
+    apiKey: revocable("apiKey"),
+    oAuthAccessToken: revocable("oAuthAccessToken"),
+    oAuthRefreshToken: revocable("oAuthRefreshToken"),
+    oAuthAuthorizationCode: revocable("oAuthAuthorizationCode"),
+    oAuthAuthorizationRequest: revocable("oAuthAuthorizationRequest"),
+    passwordResetToken: revocable("passwordResetToken"),
+    emailVerificationToken: revocable("emailVerificationToken"),
     auditLog: { create: async ({ data }: { data: Row }) => data },
   };
   prismaMock.$transaction = async (fn: (tx: unknown) => Promise<unknown>) => fn(prismaMock);
@@ -182,6 +212,9 @@ vi.mock("../../lib/session.js", () => ({
 vi.mock("../../services/api-keys.js", () => ({
   KEY_PREFIX: "dbk_",
   verifyApiKey: async () => null,
+  invalidateUserApiKeys: async (userId: string) => {
+    state.apiKeyCacheInvalidations.push(userId);
+  },
 }));
 
 vi.mock("../../lib/password.js", () => ({
@@ -348,6 +381,8 @@ beforeEach(async () => {
   state.googleConfigured = true;
   state.googleIdentity = null;
   state.verifyCalls = 0;
+  state.revocations.length = 0;
+  state.apiKeyCacheInvalidations.length = 0;
   state.config.corsOrigins = ["http://localhost:3000", "http://localhost:3002"];
   app = await buildTestApp();
 });
@@ -495,6 +530,105 @@ describe("SEC-06 — Google subject binding", () => {
     expect(res.statusCode).toBe(409);
     expect(user.googleId).toBe("dummy-subject-A");
     expect(state.sessions.size).toBe(0);
+  });
+});
+
+describe("Linking Google to an account whose email was never verified", () => {
+  const RECLAIM_REVOKES = [
+    "apiKey",
+    "oAuthAccessToken",
+    "oAuthRefreshToken",
+    "oAuthAuthorizationCode",
+    "oAuthAuthorizationRequest",
+    "passwordResetToken",
+    "emailVerificationToken",
+  ];
+
+  /** Someone registered the owner's address without proving it, and stayed signed in. */
+  function squattedAccount() {
+    return makeUser({
+      email: "owner@example.invalid",
+      emailVerifiedAt: null,
+      passwordHash: "hashed:SquatterOnly123!",
+      authMethod: "email",
+    });
+  }
+
+  it("REGRESSION: revokes the unproven registrant's password, sessions and tokens", async () => {
+    const squatted = squattedAccount();
+    // Named outright: the double numbers sessions by count, so the owner's new
+    // session could otherwise reuse this exact token string.
+    const squatterSession = "squatter-session";
+    state.sessions.set(squatterSession, String(squatted.id));
+    providerAsserts("dummy-subject-owner", "owner@example.invalid");
+
+    const res = await googleLogin();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().user.id).toBe(squatted.id);
+    expect(squatted.googleId).toBe("dummy-subject-owner");
+    expect(squatted.emailVerifiedAt).toBeInstanceOf(Date);
+    // Before the fix the squatter kept both of these on the owner's account.
+    expect(squatted.passwordHash).toBeNull();
+    expect(state.sessions.has(squatterSession)).toBe(false);
+    for (const model of RECLAIM_REVOKES) {
+      expect(state.revocations.some((r) => r.model === model && r.where.userId === squatted.id)).toBe(true);
+    }
+    expect(state.apiKeyCacheInvalidations).toEqual([squatted.id]);
+    // The owner is signed in on a fresh session, and the reclaim is on record.
+    expect(String(res.headers["set-cookie"])).toContain("db_session=");
+    expect(state.audit.find((a) => a.action === "user.google_id_linked")?.metadata).toEqual({
+      reclaimedUnverifiedAccount: true,
+    });
+  });
+
+  it("stops the squatter's password from signing in afterwards", async () => {
+    squattedAccount();
+    providerAsserts("dummy-subject-owner", "owner@example.invalid");
+    expect((await googleLogin()).statusCode).toBe(200);
+
+    const login = await app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      payload: { email: "owner@example.invalid", password: "SquatterOnly123!" },
+    });
+
+    expect(login.statusCode).toBe(401);
+  });
+
+  it("leaves a VERIFIED account's password and sessions alone", async () => {
+    const owner = makeUser({
+      email: "verified@example.invalid",
+      passwordHash: "hashed:OwnerOnly123!",
+      authMethod: "email",
+    });
+    const ownerSession = "owner-existing-session";
+    state.sessions.set(ownerSession, String(owner.id));
+    providerAsserts("dummy-subject-owner", "verified@example.invalid");
+
+    expect((await googleLogin()).statusCode).toBe(200);
+
+    expect(owner.googleId).toBe("dummy-subject-owner");
+    expect(owner.passwordHash).toBe("hashed:OwnerOnly123!");
+    expect(state.sessions.has(ownerSession)).toBe(true);
+    expect(state.revocations).toHaveLength(0);
+    expect(state.apiKeyCacheInvalidations).toHaveLength(0);
+  });
+
+  it("revokes nothing when the address is verified while the link is in flight", async () => {
+    const user = squattedAccount();
+    providerAsserts("dummy-subject-owner", "owner@example.invalid");
+    // The owner clicks their verification link between our read and our write.
+    state.beforeUserUpdateMany = () => {
+      user.emailVerifiedAt = new Date();
+    };
+
+    const res = await googleLogin();
+
+    expect(res.statusCode).toBe(409);
+    expect(user.googleId).toBeNull();
+    expect(user.passwordHash).toBe("hashed:SquatterOnly123!");
+    expect(state.revocations).toHaveLength(0);
   });
 });
 

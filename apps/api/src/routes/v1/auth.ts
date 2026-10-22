@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { User, Role } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
+import { revokeUnprovenAccess } from "../../lib/account-reclaim.js";
 import {
   verifyGoogleIdToken,
   isGoogleAuthConfigured,
@@ -38,6 +39,7 @@ import {
   sessionTokenFrom,
 } from "../../lib/session-cookie.js";
 import { enqueueUserProvisioning, healUserProvisioning } from "../../services/user-provisioning.js";
+import { invalidateUserApiKeys } from "../../services/api-keys.js";
 import {
   sendWelcomeEmail,
   sendWelcomeVerificationEmail,
@@ -226,16 +228,28 @@ async function resolveGoogleAccount(identity: GoogleIdentity): Promise<GoogleRes
  * `count === 0` and gets a conflict rather than an overwritten binding. A
  * `P2002` on the unique `googleId`/`email` index is the same story from the
  * other side and is reported the same way.
+ *
+ * Linking to an account whose email was never verified is also a reclaim.
+ * Email signup signs the registrant in before the address is proven, so that
+ * account may have been opened by someone who does not own the address.
+ * Google's verified email is the first proof of who does, so the link revokes
+ * everything the unproven registrant could still use (see
+ * lib/account-reclaim.ts). Without that, they kept their password and session
+ * on the owner's account after the owner signed in with Google.
  */
 async function linkGoogleIdentity(
   user: User,
   identity: GoogleIdentity,
   req: FastifyRequest
 ): Promise<User | null> {
+  // Decided from the row resolution read. The write below re-checks it, so an
+  // account verified in the meantime is refused here and linked normally on
+  // the next attempt instead of having its access revoked.
+  const reclaimsUnverifiedAccount = user.emailVerifiedAt === null;
   try {
-    return await prisma.$transaction(async (tx) => {
+    const linked = await prisma.$transaction(async (tx) => {
       const { count } = await tx.user.updateMany({
-        where: { id: user.id, googleId: null },
+        where: { id: user.id, googleId: null, ...(reclaimsUnverifiedAccount ? { emailVerifiedAt: null } : {}) },
         data: {
           googleId: identity.googleId,
           ...(user.email?.toLowerCase() === identity.email ? {} : { email: identity.email }),
@@ -243,16 +257,21 @@ async function linkGoogleIdentity(
         },
       });
       if (count !== 1) return null;
+      if (reclaimsUnverifiedAccount) await revokeUnprovenAccess(tx, user.id);
       await writeAuditLog(tx, {
         actorUserId: user.id,
         action: "user.google_id_linked",
         targetType: "user",
         targetId: user.id,
+        ...(reclaimsUnverifiedAccount ? { metadata: { reclaimedUnverifiedAccount: true } } : {}),
         ip: req.ip,
         userAgent: req.headers["user-agent"] ?? null,
       });
       return await tx.user.findUniqueOrThrow({ where: { id: user.id } });
     });
+    // After the commit, never inside it: see invalidateUserApiKeys().
+    if (linked && reclaimsUnverifiedAccount) await invalidateUserApiKeys(user.id);
+    return linked;
   } catch (err) {
     if ((err as { code?: string }).code === "P2002") return null;
     throw err;
