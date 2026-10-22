@@ -27,10 +27,22 @@ if ! git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
   exit 1
 fi
 
+# Run from apps/api. Anywhere else the pathspec below matches nothing, and the
+# gate would report "no new migrations" without having looked.
+if [ ! -d "$MIG_DIR" ]; then
+  echo "FATAL: $MIG_DIR not found in $(pwd). Run this from apps/api." >&2
+  exit 1
+fi
+
 # Only newly ADDED migration files matter. Prisma migrations are immutable once
 # applied, so a modified existing migration is itself a problem -- flag it too.
-added="$(git diff --name-only --diff-filter=A "$BASE_REF"...HEAD -- "$MIG_DIR" | grep '/migration\.sql$' || true)"
-modified="$(git diff --name-only --diff-filter=MD "$BASE_REF"...HEAD -- "$MIG_DIR" | grep '/migration\.sql$' || true)"
+#
+# --relative: paths relative to this directory. By default git prints them
+# from the repository root ("apps/api/prisma/..."), which do not exist from
+# here, so every file would be skipped and the gate would pass migrations it
+# never read.
+added="$(git diff --relative --name-only --diff-filter=A "$BASE_REF"...HEAD -- "$MIG_DIR" | grep '/migration\.sql$' || true)"
+modified="$(git diff --relative --name-only --diff-filter=MD "$BASE_REF"...HEAD -- "$MIG_DIR" | grep '/migration\.sql$' || true)"
 
 status=0
 
@@ -52,7 +64,12 @@ echo "Scanning $(printf '%s\n' $added | wc -l | tr -d ' ') new migration(s) agai
 echo
 
 for f in $added; do
-  [ -f "$f" ] || continue
+  # A migration git lists but this script cannot open is a gate looking in the
+  # wrong place. Failing beats reporting OK for a file nobody read.
+  if [ ! -f "$f" ]; then
+    echo "FATAL: $f is in the diff but cannot be read from $(pwd); nothing was scanned." >&2
+    exit 1
+  fi
 
   # Strip comments so a pattern mentioned in prose (e.g. the word "truncates")
   # is never mistaken for a statement, then flatten to one line for multi-line
